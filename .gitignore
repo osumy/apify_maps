@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Environment & Secrets (Crucial: Never commit API keys!)
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+
+# Downloaded Assets
+downloaded_images/
+
+# SQLite databases (uncomment if you wish to ignore databases in future runs)
+# *.db
+# *.sqlite
+# *.sqlite3
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
