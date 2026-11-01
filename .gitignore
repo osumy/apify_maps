@@ -18,6 +18,9 @@ venv.bak/
 .env.*.local
 *.env
 !.env.example
+*tokens*.txt
+*.token
+tokens/
 
 # Downloaded Assets
 downloaded_images/
