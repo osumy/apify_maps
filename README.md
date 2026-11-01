@@ -217,36 +217,74 @@ Google Maps serves user-uploaded images via dynamic content delivery parameters 
 ### Resumability & Fault Tolerance
 Each crawler run initializes the target database and builds an index of previously evaluated `cafe_id` entries (including both successful matches and verified `not_found` records). Unmatched cafes are logged to prevent redundant API queries. Any interrupted session resumes exactly where it left off.
 
-### Zero Data Loss Storage
-Rather than only capturing a predefined set of fields, the scraper archives the raw, unedited JSON dictionary from Apify in the `raw_data` column. If additional attributes (e.g., popular times, accessibility options, or amenities) are needed later, they can be extracted without re-crawling.
+### Zero Data Loss Dual-Storage Architecture
+The system decouples raw extraction from analytical querying:
+1. **Raw Storage (`google_maps_raw.jsonl`):** Each raw JSON payload returned by Apify is preserved 100% intact as append-only JSON Lines. If Google changes or adds fields in the future, zero data is lost.
+2. **Clean Relational DB (`google_maps.db`):** Highly normalized SQLite tables without redundant text dumps, indexed for fast querying, filtering, and joining.
 
 ---
 
 ## Database Schema Reference
 
-Table: `google_places_raw`
+The relational database (`google_maps.db`) consists of dedicated, indexed tables:
 
+### 1. Table: `places` (Core Venue Profile)
 | Column | Type | Description |
 | :--- | :--- | :--- |
-| `cafe_id` | `INTEGER PRIMARY KEY` | Identifier from the input source database |
-| `original_name` | `TEXT` | Input query name |
-| `searched_lat` | `REAL` | Target latitude passed to viewport |
-| `searched_lng` | `REAL` | Target longitude passed to viewport |
-| `search_url` | `TEXT` | Viewport URL constructed for Apify query |
-| `place_id` | `TEXT` | Canonical Google Place ID |
-| `title` | `TEXT` | Verified business title on Google Maps |
-| `category` | `TEXT` | Business primary category |
-| `address` | `TEXT` | Full human-readable physical address |
+| `cafe_id` | `INTEGER PRIMARY KEY` | Source database cafe identifier |
+| `place_id` | `TEXT UNIQUE` | Canonical Google Place ID (`ChIJ...`) |
+| `cid` | `TEXT` | Google Maps customer ID |
+| `title` | `TEXT` | Verified business name on Google Maps |
+| `original_name` | `TEXT` | Source query name |
+| `name_match_score` | `REAL` | Name similarity score (0.0 - 1.0) for mismatch detection |
+| `category_name` | `TEXT` | Primary category (e.g. کافی شاپ) |
+| `address` | `TEXT` | Full physical address |
+| `city` / `state` | `TEXT` | City and province/state |
+| `latitude` / `longitude` | `REAL` | Coordinates scraped from Google |
 | `phone` | `TEXT` | Contact phone number |
-| `rating` | `REAL` | Average user rating (1.0 - 5.0) |
-| `reviews_count` | `INTEGER` | Total number of user reviews |
-| `images_count` | `INTEGER` | Total photos associated with the listing |
-| `image_urls` | `TEXT` | JSON array of default photo URLs |
-| `high_res_image_urls` | `TEXT` | JSON array of `=s0` uncompressed URLs |
-| `scraped_reviews` | `TEXT` | JSON array of detailed reviews (text, score, date, author) |
-| `raw_data` | `TEXT` | Complete unedited JSON payload from Apify |
+| `website` | `TEXT` | Business website or Instagram link |
+| `total_score` | `REAL` | Average rating (1.0 - 5.0) |
+| `reviews_count` | `INTEGER` | Total Google Maps reviews count |
+| `images_count` | `INTEGER` | Total Google Maps photos count |
+| `is_claimed` | `BOOLEAN` | Whether claimed via Google Business Profile |
 | `status` | `TEXT` | Resolution status (`success` or `not_found`) |
-| `scraped_at` | `TIMESTAMP` | Record insertion timestamp |
+
+### 2. Table: `place_images` (Unified Media Gallery)
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | `INTEGER PRIMARY KEY` | Auto-incrementing photo ID |
+| `cafe_id` | `INTEGER` | Foreign key to `places.cafe_id` |
+| `source_type` | `TEXT` | Photo source: `'cover'`, `'gallery'`, or `'review'` |
+| `is_owner_photo` | `BOOLEAN` | `1` if official cover or owner upload; `0` for visitor photos |
+| `author_name` | `TEXT` | Uploading author name |
+| `review_id` | `TEXT` | Foreign key to `place_reviews.review_id` (if from review) |
+| `image_url` | `TEXT` | Original Google image URL |
+| `high_res_url` | `TEXT` | Uncompressed camera master URL (`=s0`) |
+| `local_path` | `TEXT` | Path on local disk once downloaded |
+| `download_status`| `TEXT` | Status: `'pending'`, `'downloaded'`, `'failed'` |
+
+### 3. Table: `place_reviews` (Rich Customer Feedback)
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `review_id` | `TEXT PRIMARY KEY` | Google review ID (`Ci9DQUl...`) |
+| `cafe_id` | `INTEGER` | Foreign key to `places.cafe_id` |
+| `reviewer_name` | `TEXT` | Name of the reviewer |
+| `stars` | `INTEGER` | Rating given (1 to 5) |
+| `publish_date` | `TEXT` | ISO 8601 UTC timestamp |
+| `text` | `TEXT` | Review text |
+| `likes_count` | `INTEGER` | Helpful votes on the review |
+| `is_local_guide` | `BOOLEAN` | True if author is a Google Local Guide |
+| `detailed_food_rating` | `REAL` | Sub-rating for food quality |
+| `detailed_service_rating` | `REAL` | Sub-rating for service |
+| `detailed_atmosphere_rating` | `REAL` | Sub-rating for atmosphere |
+
+### 4. Table: `place_attributes` (Amenities & Features)
+Extracted from Google Maps `additionalInfo`:
+* `cafe_id`, `group_name` (e.g. `'امکانات'`, `'محیط'`, `'پارکینگ'`), `attribute_name` (e.g. `'فضای باز'`, `'قهوه عالی'`, `'وای‌فای'`).
+
+### 5. Tables: `place_opening_hours` & `place_popular_times`
+* `place_opening_hours`: Weekly schedule per day.
+* `place_popular_times`: Hourly foot traffic histogram per day of week.
 
 ---
 
@@ -254,15 +292,18 @@ Table: `google_places_raw`
 
 ```text
 apify_maps/
-├── .env.example          # Sample environment and parameter definitions
-├── .gitignore            # Git exclusion rules for secrets, virtualenvs, and data
-├── requirements.txt      # Python dependencies
-├── key_manager.py        # Multi-key pool, live credit inspector, and auto-rotator
-├── test_key_manager.py   # Unit test suite for key manager and failover logic
-├── run_crawler.py        # Core scraping engine interacting with Apify
-├── download_images.py    # Multi-threaded high-res image downloader
-├── README.md             # Project documentation
-└── google_maps_raw.db    # SQLite database containing scraped records
+├── .env.example              # Sample environment configuration
+├── .gitignore                # Git exclusion rules
+├── requirements.txt          # Python dependencies
+├── key_manager.py            # Multi-key pool & health inspector
+├── test_key_manager.py       # Unit test suite for key manager
+├── run_crawler.py            # Scraping engine with Dual-Storage & author extraction
+├── download_images.py        # Multi-threaded high-res downloader with owner filter
+├── migrate_to_relational.py  # Zero-loss migration script from legacy raw DB
+├── benchmark_webp.py         # Image resolution & WebP format benchmark
+├── README.md                 # Complete documentation
+├── google_maps.db            # Clean, normalized relational database
+└── google_maps_raw.jsonl     # Complete raw JSON Lines archive (zero data loss)
 ```
 
 ---
