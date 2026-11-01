@@ -68,14 +68,14 @@ def compute_similarity(s1, s2):
 
 def to_high_res_url(img_url):
     """
-    Replaces Google image sizing modifier (e.g. =w1920-h1080-k-no) with =s0 
-    to retrieve the uncompressed, maximum resolution source image.
+    Replaces Google image sizing modifier (e.g. =w1920-h1080-k-no) with =s0-rw 
+    to retrieve the maximum resolution camera-master image in WebP format.
     """
     if not img_url:
         return ""
     if "=" in img_url:
-        return img_url.rsplit("=", 1)[0] + "=s0"
-    return img_url + "=s0"
+        return img_url.rsplit("=", 1)[0] + "=s0-rw"
+    return img_url + "=s0-rw"
 
 def init_output_db():
     conn = sqlite3.connect(OUTPUT_DB_PATH)

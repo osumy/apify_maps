@@ -1,7 +1,7 @@
 """
 High-Resolution Photo Downloader for Google Maps
 =================================================
-Downloads uncompressed camera-master (=s0) photos directly from place_images table.
+Downloads uncompressed camera-master WebP (=s0-rw) photos directly from place_images table.
 Supports filtering by owner photos, tracking download progress in database, and multi-threading.
 """
 
@@ -34,8 +34,8 @@ def clean_high_res_url(url):
     if not url:
         return ""
     if "=" in url:
-        return url.rsplit("=", 1)[0] + "=s0"
-    return url + "=s0"
+        return url.rsplit("=", 1)[0] + "=s0-rw"
+    return url + "=s0-rw"
 
 def download_single_image(session, url, save_path):
     if os.path.exists(save_path) and os.path.getsize(save_path) > 1024:
@@ -50,8 +50,8 @@ def download_single_image(session, url, save_path):
                 f.write(resp.content)
             return True, "downloaded"
         elif resp.status_code == 400:
-            # Fallback to standard url without =s0 if =s0 is rejected for rare images
-            base_url = url.rsplit("=", 1)[0] + "=w1600-h1200"
+            # Fallback to standard url without =s0-rw if =s0-rw is rejected for rare images
+            base_url = url.rsplit("=", 1)[0] + "=w1600-h1200-rw"
             r2 = session.get(base_url, headers=headers, timeout=20)
             if r2.status_code == 200:
                 with open(save_path, "wb") as f:
@@ -97,12 +97,12 @@ def download_images(cafe_id_filter=None, only_owner=DEFAULT_ONLY_OWNER, limit=No
 
     tasks = []
     for img_id, cid, src_type, high_res, raw_url in rows:
-        url = high_res or clean_high_res_url(raw_url)
+        url = clean_high_res_url(high_res) if high_res else clean_high_res_url(raw_url)
         if not url:
             continue
         cafe_dir = os.path.join(IMAGES_DIR, str(cid))
         os.makedirs(cafe_dir, exist_ok=True)
-        filename = f"{src_type}_{img_id}.jpg"
+        filename = f"{src_type}_{img_id}.webp"
         save_path = os.path.join(cafe_dir, filename)
         tasks.append((img_id, cid, url, save_path))
 

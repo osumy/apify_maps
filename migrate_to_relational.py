@@ -51,8 +51,8 @@ def to_high_res_url(img_url):
     if not img_url:
         return ""
     if "=" in img_url:
-        return img_url.rsplit("=", 1)[0] + "=s0"
-    return img_url + "=s0"
+        return img_url.rsplit("=", 1)[0] + "=s0-rw"
+    return img_url + "=s0-rw"
 
 def create_schema(conn):
     cur = conn.cursor()
