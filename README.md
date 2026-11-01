@@ -1,48 +1,45 @@
-# Google Maps Cafe Data & Photo Scraper (Apify) 🚀
+# Google Maps Cafe Data & Photo Scraper
 
-یک ابزار ماژولار، با کارایی بالا (High-Throughput) و خطاپذیر (Fault-Tolerant) برای استخراج خودکار تمامی داده‌های خام، نظرات (Reviews) و تصاویر با کیفیت اصلی و بدون فشرده‌سازی (Ultra High-Resolution) کافه‌ها از Google Maps با استفاده از پلتفرم Apify.
-
----
-
-## 📑 فهرست مطالب
-- [ویژگی‌های کلیدی](#-ویژگیهای-کلیدی)
-- [معماری و چرخه کاری](#-معماری-و-چرخه-کاری)
-- [پیش‌نیازها و راه‌اندازی](#-پیش‌نیازها-و-راه‌اندازی)
-- [تنظیمات متغیرهای محیطی](#-تنظیمات-متغیرهای-محیطی-env)
-- [نحوه استفاده](#-نحوه-استفاده)
-  - [۱. استخراج داده‌ها از گوگل مپ](#۱-استخراج-دادهها-از-گوگل-مپ-run_crawlerpy)
-  - [۲. دانلود تصاویر با حداکثر کیفیت](#۲-دانلود-تصاویر-با-حداکثر-کیفیت-download_imagespy)
-- [جزئیات فنی](#-جزئیات-فنی)
-  - [جستجوی بر پایه مختصات جغرافیایی](#جستجوی-بر-پایه-مختصات-جغرافیایی-geo-targeted-search)
-  - [استخراج تصاویر با رزولوشن ماکسیمم (=s0)](#استخراج-تصاویر-با-رزولوشن-ماکسیمم-s0)
-  - [پایداری و ادامه خودکار (Resumability)](#پایداری-و-ادامه-خودکار-resumability)
-- [ساختار پایگاه داده SQLite](#-ساختار-پایگاه-داده-sqlite-google_places_raw)
-- [ساختار پروژه](#-ساختار-پروژه)
+A robust, fault-tolerant, and high-throughput data extraction pipeline designed to harvest complete raw metadata, rich reviews, and uncompressed, ultra-high-resolution photos of cafes and venues from Google Maps using Apify.
 
 ---
 
-## ✨ ویژگی‌های کلیدی
-
-- 🎯 **جستجوی دقیق جغرافیایی (Geo-Targeted Search):**  
-  جلوگیری کامل از عدم تطابق یا تداخل اسامی مشابه با محدود کردن دیدگاه جستجوی گوگل مپ به شعاع ۲۰۰ الی ۳۰۰ متری (Zoom 17) بر اساس طول و عرض جغرافیایی ثبت‌شده.
-- 💾 **ذخیره ۱۰۰٪ دیتای خام در SQLite (Zero Data Loss):**  
-  علاوه بر فیلدهای استخراج‌شده (نام، آدرس، تلفن، امتیاز، تعداد نظرات)، خروجی خام JSON ارسالی از گوگل مپ در ستون `raw_data` ذخیره می‌شود.
-- 📸 **دانلود تصاویر با کیفیت اصلی دوربین (`=s0`):**  
-  تبدیل خودکار ابعاد تصویر در URLهای گوگل به پارامتر سرور `=s0` جهت واکشی عکس‌های اصلی دوربین (Full Resolution) و دانلود به صورت چندنخی موازی (Multithreaded).
-- 🔄 **قابلیت ادامه خودکار (Fault-Tolerant & Resumable):**  
-  شناسه‌های بررسی‌شده (موفق یا ناموجود) در دیتابیس ثبت شده و در صورت قطع اینترنت یا اجرای مجدد، فرآیند بدون تکرار موارد قبلی ادامه می‌یابد.
-- 📦 **پردازش دسته‌ای (Batch Processing):**  
-  ارسال دسته‌ای درخواست‌ها به اکتور `compass/crawler-google-places` برای بهینه‌سازی زمان اجرا و کاهش مصرف هزینه‌های API.
-- ⚙️ **پیکربندی منعطف از طریق `.env`:**  
-  امکان شخصی‌سازی کامل مسیر دیتابیس ورودی، خروجی، تعداد Workerها و پارامترهای کراولر بدون نیاز به دستکاری کدهای پایتون.
+## Table of Contents
+- [Key Features](#key-features)
+- [Architecture & Workflow](#architecture--workflow)
+- [Prerequisites & Installation](#prerequisites--installation)
+- [Environment Configuration](#environment-configuration)
+- [Usage Guide](#usage-guide)
+  - [1. Scraping Data from Google Maps](#1-scraping-data-from-google-maps)
+  - [2. Downloading High-Resolution Photos](#2-downloading-high-resolution-photos)
+- [Technical Architecture](#technical-architecture)
+  - [Geo-Targeted Coordinate Matching](#geo-targeted-coordinate-matching)
+  - [Ultra High-Resolution Media Pipeline (`=s0`)](#ultra-high-resolution-media-pipeline-s0)
+  - [Resumability & Fault Tolerance](#resumability--fault-tolerance)
+  - [Zero Data Loss Storage](#zero-data-loss-storage)
+- [Database Schema Reference](#database-schema-reference)
+- [Directory Structure](#directory-structure)
+- [Security & Best Practices](#security--best-practices)
 
 ---
 
-## 🏗️ معماری و چرخه کاری
+## Key Features
+
+- **Geo-Targeted Viewport Search:** Eliminates ambiguous match errors and cross-city collision by anchoring the Google Maps viewport radius to ~200-300m (`Zoom 17`) centered on exact geographic coordinates.
+- **Zero Data Loss:** Preserves the entire unstructured JSON payload returned by Apify/Google in `raw_data` while simultaneously indexing structured columns (rating, reviews, phone, categories, address).
+- **Camera-Original Resolution Media Engine (`=s0`):** Automatically detects Google server-side image scaling flags (`=w...-h...`) and transforms them into `=s0`, pulling original camera master files without compression.
+- **Resumable & Fault-Tolerant:** Tracks crawler state directly within SQLite. In the event of network disruption or process termination, subsequent runs skip previously completed places and resume cleanly.
+- **High-Throughput Parallel Downloader:** Multi-threaded asynchronous asset downloader with retry mechanisms and adaptive fallback handling.
+- **Batched Execution:** Distributes search operations in batches to `compass/crawler-google-places` on Apify to optimize API memory allocation and run costs.
+- **Zero Hardcoding & Portability:** Fully configurable paths, batch sizes, retry parameters, and concurrency limits via standard `.env` variables.
+
+---
+
+## Architecture & Workflow
 
 ```mermaid
 flowchart LR
-    A[Source SQLite DB<br/>cafes_cafe table] -->|Pending Coordinates & Names| B[run_crawler.py]
+    A[Source SQLite DB<br/>Table: cafes_cafe] -->|Pending Coordinates & Names| B[run_crawler.py]
     B -->|Batched URLs & Language: fa| C[Apify Actor<br/>crawler-google-places]
     C -->|Places, Reviews, Images JSON| B
     B -->|Parsed Fields & Raw JSON| D[(Output SQLite DB<br/>google_maps_raw.db)]
@@ -52,160 +49,183 @@ flowchart LR
 
 ---
 
-## 🚀 پیش‌نیازها و راه‌اندازی
+## Prerequisites & Installation
 
-### ۱. پیش‌نیازها
-- پایتون نسخه 3.9 یا بالاتر
-- اکانت در پلتفرم [Apify](https://apify.com) و دریافت API Token
+### 1. Requirements
+- Python 3.9 or higher
+- An active [Apify Account](https://apify.com) with API access token
 
-### ۲. نصب پکیج‌ها
-ابتدا یک محیط مجازی (اختیاری اما پیشنهادی) بسازید و کتابخانه‌ها را نصب کنید:
+### 2. Environment Setup
+Clone the repository and set up a virtual environment:
 
 ```bash
-# ایجاد محیط مجازی
+# Clone the repository
+git clone https://github.com/osumy/apify_maps.git
+cd apify_maps
+
+# Create a virtual environment
 python -m venv .venv
 
-# فعال‌سازی در ویندوز
+# Activate the virtual environment
+# On Windows:
 .venv\Scripts\activate
-
-# فعال‌سازی در لینوکس / مک
+# On Linux / macOS:
 source .venv/bin/activate
 
-# نصب وابستگی‌ها
+# Install required dependencies
 pip install -r requirements.txt
 ```
 
 ---
 
-## ⚙️ تنظیمات متغیرهای محیطی (`.env`)
+## Environment Configuration
 
-فایل نمونه `.env.example` را کپی کرده و به نام `.env` ذخیره کنید:
+Copy the sample environment file `.env.example` to create your active `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-فایل `.env` را باز کرده و توکن Apify خود را جایگزین کنید:
+Open `.env` and provide your Apify API token along with any custom path overrides:
 
 ```env
-# توکن اختصاصی Apify (الزامی)
+# Apify API Token (Required)
+# Retrieve from: https://console.apify.com/account/integrations
 APIFY_TOKEN=apify_api_xxxxxxxxxxxxxxxxxxxx
 
-# مسیر دیتابیس مبدا حاوی جدول cafes_cafe (اختیاری)
+# Source database containing input cafes with coordinates (table: cafes_cafe)
 SOURCE_DB_PATH=c:\Users\amira\Desktop\crawler\cafes_cafe_shard00.db
 
-# مسیر دیتابیس خروجی (اختیاری - پیش‌فرض google_maps_raw.db)
+# Output SQLite database file path
 OUTPUT_DB_PATH=google_maps_raw.db
 
-# پوشه ذخیره‌سازی تصاویر دانلودی (اختیاری - پیش‌فرض downloaded_images)
+# Output directory for downloaded images
 IMAGES_DIR=downloaded_images
 
-# تعداد پردازش همزمان دانلودر عکس (پیش‌فرض: 25)
+# Concurrency level for image downloads
 MAX_IMAGE_WORKERS=25
 
-# اندازه هر دسته ارسال به Apify (پیش‌فرض: 50)
+# Crawler batch size per Apify run
 BATCH_SIZE=50
 
-# حداکثر تعداد تصاویر استخراجی برای هر مکان (پیش‌فرض: 50)
+# Maximum photos to request per place
 MAX_IMAGES_PER_PLACE=50
 
-# حداکثر نظرات دریافتی برای هر کافه (پیش‌فرض: 15)
+# Maximum reviews to request per place
 MAX_REVIEWS_PER_PLACE=15
+
+# Viewport zoom level
+ZOOM_LEVEL=17
 ```
 
 ---
 
-## 💻 نحوه استفاده
+## Usage Guide
 
-### ۱. استخراج داده‌ها از گوگل مپ (`run_crawler.py`)
+### 1. Scraping Data from Google Maps
 
-برای اجرای کامل کراولر روی تمامی رکوردهای دیتابیس مبدا:
+To run the full crawler over all pending cafes from the source database:
 ```bash
 python run_crawler.py
 ```
 
-برای تست روی تعداد محدودی از کافه‌ها (مثلاً ۵ کافه اول باقی‌مانده):
+To run a limited test run (e.g., scrape the next 5 pending cafes):
 ```bash
 python run_crawler.py 5
 ```
 
-### ۲. دانلود تصاویر با حداکثر کیفیت (`download_images.py`)
+### 2. Downloading High-Resolution Photos
 
-برای دانلود موازی تمامی تصاویر مربوط به کافه‌هایی که استخراج موفق داشته‌اند:
+To download all scraped high-resolution photos for all successfully matched cafes:
 ```bash
 python download_images.py
 ```
 
-برای دانلود تصاویر یک کافه خاص بر اساس شناسه (`cafe_id`):
+To download photos for a specific venue by its ID (e.g., cafe ID `32`):
 ```bash
 python download_images.py 32
 ```
 
-تصاویر در مسیر `downloaded_images/<cafe_id>/photo_<index>.jpg` ذخیره می‌شوند.
+Photos are organized hierarchically:
+```text
+downloaded_images/
+├── 32/
+│   ├── photo_1.jpg
+│   ├── photo_2.jpg
+│   └── photo_3.jpg
+└── 100/
+    ├── photo_1.jpg
+    └── photo_2.jpg
+```
 
 ---
 
-## 🔍 جزئیات فنی
+## Technical Architecture
 
-### جستجوی بر پایه مختصات جغرافیایی (Geo-Targeted Search)
-به جای جستجوی ساده‌ی نام که ممکن است کافه‌ای با نام مشابه در شهری دیگر را برگرداند، آدرس جستجو به صورت دقیق فرمت‌بندی می‌شود:
+### Geo-Targeted Coordinate Matching
+Standard text queries often produce ambiguous results or match cafes with common names located hundreds of kilometers away. To guarantee deterministic matching, search queries are constructed with viewport coordinate locking:
 ```text
 https://www.google.com/maps/search/{encoded_name}/@{lat},{lng},{zoom}z
 ```
-سطح زوم ۱۷ نمای دوربین گوگل را مستقیماً روی شعاع کمتر از ۳۰۰ متری نقطه متمرکز می‌کند تا دقیق‌ترین نتیجه ممکن تطبیق داده شود.
+At `Zoom 17`, Google Maps restricts its viewport to a narrow radius (~200–300 meters), pinning the search specifically to the target venue while filtering out distant namesakes.
 
-### استخراج تصاویر با رزولوشن ماکسیمم (`=s0`)
-گوگل مپ تصاویر را با پارامترهایی چون `=w1920-h1080-k-no` تغییر سایز می‌دهد. تابع تبدیل در پروژه، این پیش‌فرض‌ها را به `=s0` تبدیل می‌کند که به سرور تصویر گوگل اعلام می‌کند فایل اصلی و پردازش‌نشده بارگذاری‌شده توسط کاربر را تحویل دهد. چنانچه سرور در موارد استثنایی خطای ۴۰۰ بازگرداند، اسکریپت به صورت خودکار به ابعاد معتبر fallback می‌کند.
+### Ultra High-Resolution Media Pipeline (`=s0`)
+Google Maps serves user-uploaded images via dynamic content delivery parameters (e.g., `=w1920-h1080-k-no`). The scraper parses image URLs and replaces any downsampling parameters with `=s0`:
+- `=s0` instructs Google's image edge servers to serve the uncompressed, full-dimension original master image as uploaded by the photographer.
+- If a rare server-side HTTP 400 error occurs on an unformatted asset, the downloader gracefully falls back to high-res `=w1600-h1200`.
 
-### پایداری و ادامه خودکار (Resumability)
-قبل از آغاز هر بچ:
-1. کلیه رکوردهای موجود در جدول `google_places_raw` خوانده می‌شوند.
-2. مواردی که با موفقیت یا با برچسب `not_found` پردازش شده‌اند رد می‌شوند.
-3. در صورت قطعی اتصال یا توقف ناگهانی، هیچ تکراری رخ نمی‌دهد و فرایند از اولین کافه تکمیل‌نشده ادامه پیدا می‌کند.
+### Resumability & Fault Tolerance
+Each crawler run initializes the target database and builds an index of previously evaluated `cafe_id` entries (including both successful matches and verified `not_found` records). Unmatched cafes are logged to prevent redundant API queries. Any interrupted session resumes exactly where it left off.
+
+### Zero Data Loss Storage
+Rather than only capturing a predefined set of fields, the scraper archives the raw, unedited JSON dictionary from Apify in the `raw_data` column. If additional attributes (e.g., popular times, accessibility options, or amenities) are needed later, they can be extracted without re-crawling.
 
 ---
 
-## 🗄️ ساختار پایگاه داده SQLite (`google_places_raw`)
+## Database Schema Reference
 
-| نام ستون | نوع داده | توضیحات |
+Table: `google_places_raw`
+
+| Column | Type | Description |
 | :--- | :--- | :--- |
-| `cafe_id` | `INTEGER PRIMARY KEY` | شناسه کافه در دیتابیس اصلی |
-| `original_name` | `TEXT` | نام ورودی جهت جستجو |
-| `searched_lat` | `REAL` | عرض جغرافیایی جستجوشده |
-| `searched_lng` | `REAL` | طول جغرافیایی جستجوشده |
-| `search_url` | `TEXT` | آدرس دقیق استفاده‌شده برای جستجو |
-| `place_id` | `TEXT` | شناسه یکتای مکان در گوگل مپ (Google Place ID) |
-| `title` | `TEXT` | نام رسمی ثبت‌شده مکان در گوگل مپ |
-| `category` | `TEXT` | دسته‌بندی موضوعی مکان |
-| `address` | `TEXT` | نشانی کامل متنی در گوگل مپ |
-| `phone` | `TEXT` | شماره تماس مکان |
-| `rating` | `REAL` | امتیاز میانگین ثبت‌شده (از 5) |
-| `reviews_count` | `INTEGER` | تعداد کل نظرات ثبت‌شده در گوگل |
-| `images_count` | `INTEGER` | تعداد کل عکس‌های موجود |
-| `image_urls` | `TEXT` | آرایه JSON از لینک‌های اولیه تصاویر |
-| `high_res_image_urls` | `TEXT` | آرایه JSON از لینک‌های بهینه‌شده با کیفیت اصلی (`=s0`) |
-| `scraped_reviews` | `TEXT` | آرایه JSON شامل نظرات، نام کاربر، امتیاز و تاریخ |
-| `raw_data` | `TEXT` | کل بسته JSON پاسخ Apify بدون کوچک‌ترین دستکاری |
-| `status` | `TEXT` | وضعیت تطبیق (`success` یا `not_found`) |
-| `scraped_at` | `TIMESTAMP` | زمان دقیق ثبت رکورد |
+| `cafe_id` | `INTEGER PRIMARY KEY` | Identifier from the input source database |
+| `original_name` | `TEXT` | Input query name |
+| `searched_lat` | `REAL` | Target latitude passed to viewport |
+| `searched_lng` | `REAL` | Target longitude passed to viewport |
+| `search_url` | `TEXT` | Viewport URL constructed for Apify query |
+| `place_id` | `TEXT` | Canonical Google Place ID |
+| `title` | `TEXT` | Verified business title on Google Maps |
+| `category` | `TEXT` | Business primary category |
+| `address` | `TEXT` | Full human-readable physical address |
+| `phone` | `TEXT` | Contact phone number |
+| `rating` | `REAL` | Average user rating (1.0 - 5.0) |
+| `reviews_count` | `INTEGER` | Total number of user reviews |
+| `images_count` | `INTEGER` | Total photos associated with the listing |
+| `image_urls` | `TEXT` | JSON array of default photo URLs |
+| `high_res_image_urls` | `TEXT` | JSON array of `=s0` uncompressed URLs |
+| `scraped_reviews` | `TEXT` | JSON array of detailed reviews (text, score, date, author) |
+| `raw_data` | `TEXT` | Complete unedited JSON payload from Apify |
+| `status` | `TEXT` | Resolution status (`success` or `not_found`) |
+| `scraped_at` | `TIMESTAMP` | Record insertion timestamp |
 
 ---
 
-## 📁 ساختار پروژه
+## Directory Structure
 
 ```text
 apify_maps/
-├── .env.example          # نمونه تنظیمات متغیرهای محیطی
-├── .gitignore            # فایل‌های نادیده‌گرفته‌شده در گیت
-├── requirements.txt      # لیست کتابخانه‌های پایتون مورد نیاز
-├── run_crawler.py        # اسکریپت اصلی استخراج اطلاعات از Google Maps
-├── download_images.py    # اسکریپت دانلود چندنخی تصاویر با کیفیت ماکسیمم
-├── README.md             # مستندات و راهنمای کامل پروژه
-└── google_maps_raw.db    # پایگاه داده SQLite داده‌های استخراج‌شده
+├── .env.example          # Sample environment and parameter definitions
+├── .gitignore            # Git exclusion rules for secrets, virtualenvs, and data
+├── requirements.txt      # Python dependencies
+├── run_crawler.py        # Core scraping engine interacting with Apify
+├── download_images.py    # Multi-threaded high-res image downloader
+├── README.md             # Project documentation
+└── google_maps_raw.db    # SQLite database containing scraped records
 ```
 
 ---
 
-## 🔒 امنیت و نکات مهم
-- **حفظ حریم خصوصی کلید API:** فایل `.env` به صورت پیش‌فرض در `.gitignore` قرار داده شده است. هرگز توکن‌های پلتفرم Apify خود را در ریپازیتوری‌های عمومی یا کامیت‌ها قرار ندهید.
-- **ترافیک مصرفی:** دانلود تصاویر با کیفیت اصلی مصرف پهنای باند و فضای دیسک بیشتری نسبت به نسخه‌های Thumbnail دارد؛ در صورت نیاز تعداد `MAX_IMAGES_PER_PLACE` را محدود کنید.
+## Security & Best Practices
+
+- **Never Commit Secrets:** The `.env` file containing your `APIFY_TOKEN` is ignored by `.gitignore`. Keep your tokens secure.
+- **Bandwidth Consumption:** Downloading master resolution images (`=s0`) consumes significantly more bandwidth and disk space than thumbnails. Adjust `MAX_IMAGES_PER_PLACE` in `.env` if local storage or quota is constrained.
