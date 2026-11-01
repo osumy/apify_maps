@@ -25,6 +25,8 @@ A robust, fault-tolerant, and high-throughput data extraction pipeline designed 
 
 ## Key Features
 
+- **Multi-Key Token Pool & Auto-Rotation:** Manages multiple Apify accounts simultaneously, monitoring remaining USD credits and monthly usage in real time. Transparently switches to the next healthy account whenever a key's quota or credit limit is exhausted.
+- **Live Account Balance & Health Endpoint Inspection:** Built-in CLI and Python interface querying Apify's `/v2/users/me` and `/v2/users/me/limits` to display active balances, limits, and tiers.
 - **Geo-Targeted Viewport Search:** Eliminates ambiguous match errors and cross-city collision by anchoring the Google Maps viewport radius to ~200-300m (`Zoom 17`) centered on exact geographic coordinates.
 - **Zero Data Loss:** Preserves the entire unstructured JSON payload returned by Apify/Google in `raw_data` while simultaneously indexing structured columns (rating, reviews, phone, categories, address).
 - **Camera-Original Resolution Media Engine (`=s0`):** Automatically detects Google server-side image scaling flags (`=w...-h...`) and transforms them into `=s0`, pulling original camera master files without compression.
@@ -39,7 +41,8 @@ A robust, fault-tolerant, and high-throughput data extraction pipeline designed 
 
 ```mermaid
 flowchart LR
-    A[Source SQLite DB<br/>Table: cafes_cafe] -->|Pending Coordinates & Names| B[run_crawler.py]
+    KM[key_manager.py<br/>Multi-Key Pool & Health Check] -->|Healthy Client & Auto-Failover| B[run_crawler.py]
+    A[Source SQLite DB<br/>Table: cafes_cafe] -->|Pending Coordinates & Names| B
     B -->|Batched URLs & Language: fa| C[Apify Actor<br/>crawler-google-places]
     C -->|Places, Reviews, Images JSON| B
     B -->|Parsed Fields & Raw JSON| D[(Output SQLite DB<br/>google_maps_raw.db)]
@@ -141,6 +144,43 @@ To download all scraped high-resolution photos for all successfully matched cafe
 python download_images.py
 ```
 
+### 3. Inspecting Apify Account Balances & Key Health
+
+The repository includes a dedicated CLI balance and pool manager (`key_manager.py`) that queries Apify's official `/v2/users/me` and `/v2/users/me/limits` endpoints:
+
+To display an ASCII dashboard of all keys, user identities, monthly limits, current usage, and remaining USD:
+```bash
+python key_manager.py
+```
+
+Sample output:
+```text
+================================================================================================
+                        APIFY MULTI-KEY POOL STATUS & BALANCES
+================================================================================================
+#   | Token                  | User / Email                 | Tier   | Limit   | Used    | Rem.    | Status
+------------------------------------------------------------------------------------------------
+1   | apify_api_eJGiV...2wP8tx | pronounced_zaibatsu (amira.. | FREE   | $10.00  | $6.95   | $3.05   | 🟢 ACTIVE
+2   | apify_api_o0Y2k...3NBzco | AliThz-Pro (alithz.pro@gmai) | FREE   | $5.00   | $0.00   | $5.00   | 🟢 ACTIVE
+3   | apify_api_SOuyK...4eozU9 | Unknown                      | UNKNOWN | -       | -       | -       | 🔴 INVALID
+4   | apify_api_HLftj...24K5oM | fair_laureate (ali.thz83@g.. | FREE   | $5.00   | $0.00   | $5.00   | 🟢 ACTIVE
+------------------------------------------------------------------------------------------------
+Summary: Total Keys: 4 | Active: 3 | Exhausted: 0 | Invalid: 1
+Total Usable Balance: $13.05 USD
+Current Working Key: apify_api_eJGiV...2wP8tx (User: pronounced_zaibatsu, Rem: $3.05)
+================================================================================================
+```
+
+To export the pool status in JSON format:
+```bash
+python key_manager.py --json
+```
+
+To run unit tests verifying key failover, error detection, and rotation:
+```bash
+python -m unittest test_key_manager.py
+```
+
 To download photos for a specific venue by its ID (e.g., cafe ID `32`):
 ```bash
 python download_images.py 32
@@ -217,6 +257,8 @@ apify_maps/
 ├── .env.example          # Sample environment and parameter definitions
 ├── .gitignore            # Git exclusion rules for secrets, virtualenvs, and data
 ├── requirements.txt      # Python dependencies
+├── key_manager.py        # Multi-key pool, live credit inspector, and auto-rotator
+├── test_key_manager.py   # Unit test suite for key manager and failover logic
 ├── run_crawler.py        # Core scraping engine interacting with Apify
 ├── download_images.py    # Multi-threaded high-res image downloader
 ├── README.md             # Project documentation
