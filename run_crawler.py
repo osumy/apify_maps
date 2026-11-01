@@ -22,10 +22,6 @@ def load_dotenv():
 
 load_dotenv()
 
-# Key Manager & Pool Initialization
-KEY_ROTATION_STRATEGY = os.getenv("KEY_ROTATION_STRATEGY", "sequential")
-key_manager = ApifyKeyManager(strategy=KEY_ROTATION_STRATEGY)
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", r"c:\Users\amira\Desktop\crawler\cafes_cafe_shard00.db")
 OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(BASE_DIR, "google_maps.db"))
@@ -38,6 +34,50 @@ MAX_REVIEWS_PER_PLACE = int(os.getenv("MAX_REVIEWS_PER_PLACE", "15"))
 ZOOM_LEVEL = int(os.getenv("ZOOM_LEVEL", "17"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
 SCRAPE_IMAGE_AUTHORS = os.getenv("SCRAPE_IMAGE_AUTHORS", "true").lower() in ("true", "1", "yes")
+
+_default_key_manager = None
+
+def get_default_key_manager(strategy=None, tokens=None):
+    """Returns or lazily initializes the default ApifyKeyManager."""
+    global _default_key_manager
+    if _default_key_manager is None or tokens is not None:
+        chosen_strategy = strategy or os.getenv("KEY_ROTATION_STRATEGY", "sequential")
+        _default_key_manager = ApifyKeyManager(tokens=tokens, strategy=chosen_strategy)
+    return _default_key_manager
+
+def set_api_tokens(tokens, strategy="sequential"):
+    """Explicitly configure the API tokens for notebooks or custom scripts."""
+    global _default_key_manager
+    _default_key_manager = ApifyKeyManager(tokens=tokens, strategy=strategy)
+    return _default_key_manager
+
+class _KeyManagerProxy:
+    """Proxy object so `from run_crawler import key_manager` works dynamically."""
+    def __getattr__(self, name):
+        return getattr(get_default_key_manager(), name)
+
+key_manager = _KeyManagerProxy()
+
+def get_db_connection(db_path, timeout=60.0):
+    """
+    Returns an optimized sqlite3 connection.
+    Configures busy timeout and safe journal mode for both local SSDs and network/FUSE drives (e.g. Google Drive).
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=timeout)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout = 60000;")
+        # Avoid WAL mode on network/FUSE filesystems (like Google Drive) to prevent locking / I/O errors
+        is_fuse_or_drive = "drive" in db_path.lower() or "/content/drive" in db_path
+        if is_fuse_or_drive:
+            conn.execute("PRAGMA journal_mode = TRUNCATE;")
+        else:
+            conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+    except Exception:
+        pass
+    return conn
 
 def normalize_text(text):
     if not text:
@@ -77,8 +117,9 @@ def to_high_res_url(img_url):
         return img_url.rsplit("=", 1)[0] + "=s0-rw"
     return img_url + "=s0-rw"
 
-def init_output_db():
-    conn = sqlite3.connect(OUTPUT_DB_PATH)
+def init_output_db(output_db_path=None):
+    db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
+    conn = get_db_connection(db_path)
     cur = conn.cursor()
     cur.execute('''
     CREATE TABLE IF NOT EXISTS places (
@@ -209,9 +250,13 @@ def build_search_url(name, lat, lng, zoom=ZOOM_LEVEL):
     encoded_name = urllib.parse.quote_plus(clean_name)
     return f"https://www.google.com/maps/search/{encoded_name}/@{lat},{lng},{zoom}z"
 
-def get_pending_cafes(limit=None):
-    init_output_db()
-    out_conn = sqlite3.connect(OUTPUT_DB_PATH)
+def get_pending_cafes(source_db_path=None, output_db_path=None, limit=None, zoom=None):
+    source_db_path = source_db_path or os.getenv("SOURCE_DB_PATH", SOURCE_DB_PATH)
+    output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
+    zoom = int(zoom if zoom is not None else os.getenv("ZOOM_LEVEL", ZOOM_LEVEL))
+
+    init_output_db(output_db_path)
+    out_conn = get_db_connection(output_db_path)
     out_cur = out_conn.cursor()
     # Cafes already processed (either success or not_found)
     existing_ids = set(row[0] for row in out_cur.execute(
@@ -219,16 +264,14 @@ def get_pending_cafes(limit=None):
     ).fetchall())
     out_conn.close()
 
-    if not os.path.exists(SOURCE_DB_PATH):
+    if not os.path.exists(source_db_path):
         raise FileNotFoundError(
-            f"Source database not found at '{SOURCE_DB_PATH}'. "
-            "Please check the path or set SOURCE_DB_PATH in your .env file."
+            f"Source database not found at '{source_db_path}'. "
+            "Please check the path or set SOURCE_DB_PATH in your .env or notebook."
         )
 
-    src_conn = sqlite3.connect(SOURCE_DB_PATH)
-    src_conn.row_factory = sqlite3.Row
+    src_conn = get_db_connection(source_db_path)
     src_cur = src_conn.cursor()
-    
     rows = src_cur.execute("SELECT id, name, latitude, longitude, city, address FROM cafes_cafe").fetchall()
     src_conn.close()
 
@@ -242,7 +285,7 @@ def get_pending_cafes(limit=None):
         name = r["name"]
         if not lat or not lng:
             continue
-        search_url = build_search_url(name, lat, lng)
+        search_url = build_search_url(name, lat, lng, zoom=zoom)
         pending.append({
             "cafe_id": cid,
             "name": name,
@@ -256,16 +299,20 @@ def get_pending_cafes(limit=None):
 
     return pending
 
-def save_batch_results(batch_cafes, scraped_items):
-    init_output_db()
-    conn = sqlite3.connect(OUTPUT_DB_PATH)
+def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_jsonl_path=None):
+    output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
+    raw_jsonl_path = raw_jsonl_path or os.getenv("RAW_JSONL_PATH", RAW_JSONL_PATH)
+
+    init_output_db(output_db_path)
+    conn = get_db_connection(output_db_path)
     cur = conn.cursor()
 
     url_to_cafe = {c["search_url"]: c for c in batch_cafes}
     matched_cafe_ids = set()
 
     # Append-only raw JSON Lines archive
-    jsonl_file = open(RAW_JSONL_PATH, "a", encoding="utf-8")
+    os.makedirs(os.path.dirname(os.path.abspath(raw_jsonl_path)), exist_ok=True)
+    jsonl_file = open(raw_jsonl_path, "a", encoding="utf-8")
 
     for item in scraped_items:
         raw_search_url = item.get("searchPageUrl", "")
@@ -381,7 +428,6 @@ def save_batch_results(batch_cafes, scraped_items):
                 seen_image_urls.add(u)
                 author = img_obj.get("authorName", "")
                 author_url = img_obj.get("authorUrl", "")
-                # If author matches business title or is marked owner, set is_owner = 1
                 is_owner = 1 if (author and (normalize_text(author) == normalize_text(title))) else 0
                 cur.execute('''
                     INSERT INTO place_images (cafe_id, source_type, is_owner_photo, author_name, author_url, image_url, high_res_url)
@@ -408,7 +454,7 @@ def save_batch_results(batch_cafes, scraped_items):
             cur.execute('''
                 INSERT OR IGNORE INTO place_reviews (
                     review_id, cafe_id, reviewer_id, reviewer_name, reviewer_photo_url,
-                    reviewer_reviews_count, is_local_guide, stars, publish_date,
+                    reviewer_reviews_count, is_local_guide BOOLEAN, stars, publish_date,
                     publish_relative, likes_count, text, original_language,
                     detailed_food_rating, detailed_service_rating, detailed_atmosphere_rating,
                     response_from_owner_text, response_from_owner_date
@@ -490,29 +536,70 @@ def save_batch_results(batch_cafes, scraped_items):
     conn.close()
     return len(matched_cafe_ids), len(batch_cafes) - len(matched_cafe_ids)
 
-def run_scraper(batch_size=BATCH_SIZE, max_total=None):
-    init_output_db()
+def run_scraper(
+    batch_size=None,
+    max_total=None,
+    source_db_path=None,
+    output_db_path=None,
+    raw_jsonl_path=None,
+    max_images=None,
+    max_reviews=None,
+    zoom_level=None,
+    key_manager_instance=None,
+    scrape_image_authors=None,
+    progress_bar=True
+):
+    """
+    Main scraper execution engine.
+    Supports modular arguments, live progress tracking, auto-rotation across multiple keys,
+    and resumability.
+    """
+    source_db_path = source_db_path or os.getenv("SOURCE_DB_PATH", SOURCE_DB_PATH)
+    output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
+    raw_jsonl_path = raw_jsonl_path or os.getenv("RAW_JSONL_PATH", RAW_JSONL_PATH)
+    batch_size = int(batch_size or os.getenv("BATCH_SIZE", "50"))
+    max_images = int(max_images if max_images is not None else os.getenv("MAX_IMAGES_PER_PLACE", "50"))
+    max_reviews = int(max_reviews if max_reviews is not None else os.getenv("MAX_REVIEWS_PER_PLACE", "15"))
+    zoom_level = int(zoom_level if zoom_level is not None else os.getenv("ZOOM_LEVEL", "17"))
+    if scrape_image_authors is None:
+        scrape_image_authors = os.getenv("SCRAPE_IMAGE_AUTHORS", "true").lower() in ("true", "1", "yes")
 
-    # Display Apify Key Pool Status & Balances before starting
+    km = key_manager_instance or get_default_key_manager()
+    init_output_db(output_db_path)
+
     print("\n[Apify Pool Initialization]")
-    key_manager.print_summary()
+    km.print_summary()
 
-    all_pending = get_pending_cafes(limit=max_total)
+    all_pending = get_pending_cafes(source_db_path=source_db_path, output_db_path=output_db_path, limit=max_total, zoom=zoom_level)
     total_count = len(all_pending)
     print(f"Total pending cafes to crawl: {total_count}")
 
     if total_count == 0:
         print("All cafes in the source database have already been scraped!")
-        return
+        return {
+            "processed": 0,
+            "matched": 0,
+            "not_found": 0,
+            "total_pending": 0,
+            "stopped_reason": "already_up_to_date"
+        }
 
     processed = 0
     total_matched = 0
     total_not_found = 0
+    total_batches = (total_count + batch_size - 1) // batch_size
+
+    pbar = None
+    if progress_bar:
+        try:
+            from tqdm.auto import tqdm
+            pbar = tqdm(total=total_count, desc="Crawling Cafes", unit="cafe")
+        except ImportError:
+            pbar = None
 
     for i in range(0, total_count, batch_size):
         batch = all_pending[i:i + batch_size]
         batch_num = i // batch_size + 1
-        total_batches = (total_count + batch_size - 1) // batch_size
         print(f"\n==========================================")
         print(f"Starting batch {batch_num}/{total_batches} ({len(batch)} cafes: '{batch[0]['name']}' ... '{batch[-1]['name']}')")
         print(f"==========================================")
@@ -522,9 +609,9 @@ def run_scraper(batch_size=BATCH_SIZE, max_total=None):
         run_input = {
             "startUrls": start_urls,
             "maxCrawledPlacesPerSearch": 1,
-            "maxImages": MAX_IMAGES_PER_PLACE,
-            "maxReviews": MAX_REVIEWS_PER_PLACE,
-            "scrapeImageAuthors": SCRAPE_IMAGE_AUTHORS,
+            "maxImages": max_images,
+            "maxReviews": max_reviews,
+            "scrapeImageAuthors": scrape_image_authors,
             "language": "fa"
         }
 
@@ -542,13 +629,20 @@ def run_scraper(batch_size=BATCH_SIZE, max_total=None):
                     items = client.dataset(dataset_id).list_items().items
                     return items
 
-                items = key_manager.execute_with_retry(_execute_crawl)
+                items = km.execute_with_retry(_execute_crawl)
                 print(f"Retrieved {len(items)} places from Apify.")
 
-                matched, not_found = save_batch_results(batch, items)
+                matched, not_found = save_batch_results(
+                    batch, items, output_db_path=output_db_path, raw_jsonl_path=raw_jsonl_path
+                )
                 total_matched += matched
                 total_not_found += not_found
                 processed += len(batch)
+                
+                if pbar:
+                    pbar.update(len(batch))
+                    pbar.set_postfix({"matched": total_matched, "not_found": total_not_found})
+
                 print(f"Batch {batch_num} saved: {matched} matched, {not_found} not found.")
                 print(f"Overall Progress: {processed}/{total_count} processed ({total_matched} success, {total_not_found} not found).")
                 success = True
@@ -556,7 +650,15 @@ def run_scraper(batch_size=BATCH_SIZE, max_total=None):
             except AllKeysExhaustedError as e:
                 print(f"\n[FATAL] Key Pool Exhaustion: {e}")
                 print("All available Apify keys have been exhausted. Stopping crawl gracefully.")
-                return
+                if pbar:
+                    pbar.close()
+                return {
+                    "processed": processed,
+                    "matched": total_matched,
+                    "not_found": total_not_found,
+                    "total_pending": total_count,
+                    "stopped_reason": "keys_exhausted"
+                }
             except Exception as e:
                 print(f"Error on batch {batch_num} attempt {attempt}: {e}")
                 if attempt < MAX_RETRIES:
@@ -568,7 +670,17 @@ def run_scraper(batch_size=BATCH_SIZE, max_total=None):
             print("Stopping crawl due to consecutive errors.")
             break
 
+    if pbar:
+        pbar.close()
+
     print(f"\nCrawl complete! Processed: {processed}/{total_count} (Total Success: {total_matched}, Not found: {total_not_found})")
+    return {
+        "processed": processed,
+        "matched": total_matched,
+        "not_found": total_not_found,
+        "total_pending": total_count,
+        "stopped_reason": "completed" if processed == total_count else "stopped_early"
+    }
 
 if __name__ == "__main__":
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
