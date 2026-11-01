@@ -186,6 +186,31 @@ To download photos for a specific venue by its ID (e.g., cafe ID `32`):
 python download_images.py 32
 ```
 
+### 4. Running on Google Colab or Kaggle (with Google Drive Storage)
+
+A ready-to-run Jupyter notebook [`google_maps_scraper.ipynb`](file:///c:/Users/amira/Desktop/apify_maps/google_maps_scraper.ipynb) is included for cloud environments (Google Colab / Kaggle):
+
+1. Open `google_maps_scraper.ipynb` in Google Colab or Kaggle.
+2. Run the cells in sequence:
+   - **Mount Drive:** Mounts `/content/drive` so all outputs persist directly on your Google Drive.
+   - **Configure Paths:** Point `SOURCE_DB_PATH` to your Google Drive folder (e.g. `/content/drive/MyDrive/apify_maps_data/cafes_cafe_shard00.db`).
+   - **Inspect Balances:** Runs live balance and key health checks across all your Apify accounts.
+   - **Run Scraper:** Executes batched scraping with real-time `tqdm` progress and batch-by-batch commits.
+   - **Download Photos:** Concurrently pulls camera-original WebP photos (`=s0-rw`) directly into Google Drive with periodic database updates.
+
+```python
+from run_crawler import run_scraper
+from download_images import download_images
+
+# Modular scraping with custom Drive paths
+run_scraper(
+    source_db_path="/content/drive/MyDrive/apify_maps_data/cafes_cafe_shard00.db",
+    output_db_path="/content/drive/MyDrive/apify_maps_data/google_maps.db",
+    raw_jsonl_path="/content/drive/MyDrive/apify_maps_data/google_maps_raw.jsonl",
+    batch_size=50
+)
+```
+
 Photos are organized hierarchically:
 ```text
 downloaded_images/
@@ -293,13 +318,14 @@ Extracted from Google Maps `additionalInfo`:
 
 ```text
 apify_maps/
+├── google_maps_scraper.ipynb # Google Colab / Kaggle interactive execution notebook
 ├── .env.example              # Sample environment configuration
 ├── .gitignore                # Git exclusion rules
-├── requirements.txt          # Python dependencies
+├── requirements.txt          # Python dependencies (apify-client, requests, tqdm)
 ├── key_manager.py            # Multi-key pool & health inspector
 ├── test_key_manager.py       # Unit test suite for key manager
-├── run_crawler.py            # Scraping engine with Dual-Storage & author extraction
-├── download_images.py        # Multi-threaded high-res WebP downloader with owner filter
+├── run_crawler.py            # Modular scraping engine with Dual-Storage & author extraction
+├── download_images.py        # Modular multi-threaded high-res WebP downloader with periodic commit
 ├── migrate_to_relational.py  # Zero-loss migration script from legacy raw DB
 ├── README.md                 # Complete documentation
 ├── google_maps.db            # Clean, normalized relational database
