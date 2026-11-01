@@ -6,6 +6,7 @@ import time
 import sqlite3
 import urllib.parse
 from apify_client import ApifyClient
+from key_manager import ApifyKeyManager, AllKeysExhaustedError
 
 # Helper to load .env without external dependencies
 def load_dotenv():
@@ -16,14 +17,14 @@ def load_dotenv():
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
+                    os.environ.setdefault(k.strip(), v.strip().strip("'\""))
 
 load_dotenv()
 
-# Configuration
-APIFY_TOKEN = os.getenv("APIFY_TOKEN")
-if not APIFY_TOKEN:
-    raise ValueError("Apify API token not found! Please set APIFY_TOKEN in .env file or environment variable.")
+# Key Manager & Pool Initialization
+KEY_ROTATION_STRATEGY = os.getenv("KEY_ROTATION_STRATEGY", "sequential")
+key_manager = ApifyKeyManager(strategy=KEY_ROTATION_STRATEGY)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", r"c:\Users\amira\Desktop\crawler\cafes_cafe_shard00.db")
 OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(BASE_DIR, "google_maps_raw.db"))
@@ -34,8 +35,6 @@ MAX_IMAGES_PER_PLACE = int(os.getenv("MAX_IMAGES_PER_PLACE", "50"))
 MAX_REVIEWS_PER_PLACE = int(os.getenv("MAX_REVIEWS_PER_PLACE", "15"))
 ZOOM_LEVEL = int(os.getenv("ZOOM_LEVEL", "17"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
-
-client = ApifyClient(APIFY_TOKEN)
 
 def init_output_db():
     conn = sqlite3.connect(OUTPUT_DB_PATH)
@@ -214,6 +213,11 @@ def save_batch_results(batch_cafes, scraped_items):
 
 def run_scraper(batch_size=BATCH_SIZE, max_total=None):
     init_output_db()
+
+    # Display Apify Key Pool Status & Balances before starting
+    print("\n[Apify Pool Initialization]")
+    key_manager.print_summary()
+
     all_pending = get_pending_cafes(limit=max_total)
     total_count = len(all_pending)
     print(f"Total pending cafes to crawl: {total_count}")
@@ -247,13 +251,18 @@ def run_scraper(batch_size=BATCH_SIZE, max_total=None):
         success = False
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                print(f"Submitting batch {batch_num} to Apify (Attempt {attempt})...")
-                run = client.actor("compass/crawler-google-places").call(run_input=run_input)
-                run_dict = run.model_dump()
-                dataset_id = run_dict.get("default_dataset_id")
-                print(f"Run {run_dict.get('id')} finished. Dataset: {dataset_id}")
-                
-                items = client.dataset(dataset_id).list_items().items
+                def _execute_crawl(client):
+                    print(f"Submitting batch {batch_num} to Apify (Attempt {attempt})...")
+                    run = client.actor("compass/crawler-google-places").call(run_input=run_input)
+                    run_dict = run.model_dump() if hasattr(run, "model_dump") else run
+                    dataset_id = run_dict.get("default_dataset_id") if isinstance(run_dict, dict) else getattr(run, "default_dataset_id", None)
+                    run_id = run_dict.get("id") if isinstance(run_dict, dict) else getattr(run, "id", None)
+                    print(f"Run {run_id} finished. Dataset: {dataset_id}")
+                    
+                    items = client.dataset(dataset_id).list_items().items
+                    return items
+
+                items = key_manager.execute_with_retry(_execute_crawl)
                 print(f"Retrieved {len(items)} places from Apify.")
 
                 matched, not_found = save_batch_results(batch, items)
@@ -264,6 +273,10 @@ def run_scraper(batch_size=BATCH_SIZE, max_total=None):
                 print(f"Overall Progress: {processed}/{total_count} processed ({total_matched} success, {total_not_found} not found).")
                 success = True
                 break
+            except AllKeysExhaustedError as e:
+                print(f"\n[FATAL] Key Pool Exhaustion: {e}")
+                print("All available Apify keys have been exhausted. Stopping crawl gracefully.")
+                return
             except Exception as e:
                 print(f"Error on batch {batch_num} attempt {attempt}: {e}")
                 if attempt < MAX_RETRIES:
