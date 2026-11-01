@@ -1,10 +1,17 @@
+"""
+High-Resolution Photo Downloader for Google Maps
+=================================================
+Downloads uncompressed camera-master (=s0) photos directly from place_images table.
+Supports filtering by owner photos, tracking download progress in database, and multi-threading.
+"""
+
 import os
-import json
+import sys
 import sqlite3
+import argparse
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Helper to load .env without external dependencies
 def load_dotenv():
     env_path = os.path.join(os.path.dirname(__file__), ".env")
     if os.path.exists(env_path):
@@ -13,14 +20,15 @@ def load_dotenv():
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
+                    os.environ.setdefault(k.strip(), v.strip().strip("'\""))
 
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(BASE_DIR, "google_maps_raw.db"))
+OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(BASE_DIR, "google_maps.db"))
 IMAGES_DIR = os.getenv("IMAGES_DIR", os.path.join(BASE_DIR, "downloaded_images"))
 MAX_WORKERS = int(os.getenv("MAX_IMAGE_WORKERS", "25"))
+DEFAULT_ONLY_OWNER = os.getenv("DOWNLOAD_ONLY_OWNER", "true").lower() in ("true", "1", "yes")
 
 def clean_high_res_url(url):
     if not url:
@@ -42,7 +50,7 @@ def download_single_image(session, url, save_path):
                 f.write(resp.content)
             return True, "downloaded"
         elif resp.status_code == 400:
-            # Fallback to standard url without =s0 if =s0 is rejected for some rare images
+            # Fallback to standard url without =s0 if =s0 is rejected for rare images
             base_url = url.rsplit("=", 1)[0] + "=w1600-h1200"
             r2 = session.get(base_url, headers=headers, timeout=20)
             if r2.status_code == 200:
@@ -53,82 +61,102 @@ def download_single_image(session, url, save_path):
     except Exception as e:
         return False, str(e)
 
-def download_all_images(cafe_id_filter=None):
+def download_images(cafe_id_filter=None, only_owner=DEFAULT_ONLY_OWNER, limit=None):
     if not os.path.exists(OUTPUT_DB_PATH):
-        print(f"Error: Output database not found at '{OUTPUT_DB_PATH}'. Please run the crawler first.")
+        print(f"Error: Database not found at '{OUTPUT_DB_PATH}'. Please run crawler or migration first.")
         return
 
-    if not os.path.exists(IMAGES_DIR):
-        os.makedirs(IMAGES_DIR, exist_ok=True)
+    os.makedirs(IMAGES_DIR, exist_ok=True)
 
     conn = sqlite3.connect(OUTPUT_DB_PATH)
     cur = conn.cursor()
 
+    conditions = ["download_status != 'downloaded'"]
+    params = []
+
     if cafe_id_filter:
-        query = "SELECT cafe_id, original_name, image_urls, high_res_image_urls FROM google_places_raw WHERE cafe_id = ? AND status = 'success'"
-        rows = cur.execute(query, (cafe_id_filter,)).fetchall()
-    else:
-        query = "SELECT cafe_id, original_name, image_urls, high_res_image_urls FROM google_places_raw WHERE status = 'success'"
-        rows = cur.execute(query).fetchall()
+        conditions.append("cafe_id = ?")
+        params.append(cafe_id_filter)
+
+    if only_owner:
+        conditions.append("(is_owner_photo = 1 OR source_type = 'cover')")
+
+    where_clause = " WHERE " + " AND ".join(conditions)
+    query = f"SELECT id, cafe_id, source_type, high_res_url, image_url FROM place_images {where_clause}"
+    if limit:
+        query += f" LIMIT {int(limit)}"
+
+    rows = cur.execute(query, params).fetchall()
     conn.close()
 
+    total_images = len(rows)
+    print(f"Found {total_images} images to download (Filters: only_owner={only_owner}, cafe_id={cafe_id_filter})")
+    if total_images == 0:
+        print("No pending images found.")
+        return
+
     tasks = []
-    total_images = 0
-
-    for cid, name, raw_urls_json, high_res_json in rows:
-        urls_json = high_res_json or raw_urls_json
-        if not urls_json:
+    for img_id, cid, src_type, high_res, raw_url in rows:
+        url = high_res or clean_high_res_url(raw_url)
+        if not url:
             continue
-        try:
-            urls = json.loads(urls_json)
-        except Exception:
-            continue
-
         cafe_dir = os.path.join(IMAGES_DIR, str(cid))
         os.makedirs(cafe_dir, exist_ok=True)
-
-        for idx, u in enumerate(urls, 1):
-            if not u:
-                continue
-            clean_url = clean_high_res_url(u)
-            save_path = os.path.join(cafe_dir, f"photo_{idx}.jpg")
-            tasks.append((clean_url, save_path, cid, idx))
-            total_images += 1
-
-    print(f"Total images queue size: {total_images}")
-    if total_images == 0:
-        print("No images found to download.")
-        return
+        filename = f"{src_type}_{img_id}.jpg"
+        save_path = os.path.join(cafe_dir, filename)
+        tasks.append((img_id, cid, url, save_path))
 
     print(f"Starting downloads with {MAX_WORKERS} workers...")
     completed = 0
     success = 0
     already_done = 0
+    downloaded_records = []
 
-    # Thread-local session for reuse
     session = requests.Session()
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_task = {
-            executor.submit(download_single_image, session, t[0], t[1]): t for t in tasks
+            executor.submit(download_single_image, session, t[2], t[3]): t for t in tasks
         }
         for future in as_completed(future_to_task):
             task = future_to_task[future]
+            img_id, cid, url, save_path = task
             try:
                 ok, msg = future.result()
                 if ok:
                     success += 1
                     if msg == "already_exists":
                         already_done += 1
+                    downloaded_records.append((save_path, img_id))
                 completed += 1
-                if completed % 100 == 0 or completed == total_images:
-                    print(f"Progress: {completed}/{total_images} (Downloaded: {success}, Existing: {already_done})")
-            except Exception as e:
+                if completed % 100 == 0 or completed == len(tasks):
+                    print(f"Progress: {completed}/{len(tasks)} (Success: {success}, Existing: {already_done})")
+            except Exception:
                 pass
 
-    print(f"\nImage downloading complete! {success}/{total_images} images successfully stored in '{IMAGES_DIR}'.")
+    # Batch update download status in database
+    if downloaded_records:
+        conn = sqlite3.connect(OUTPUT_DB_PATH)
+        cur = conn.cursor()
+        cur.executemany('''
+            UPDATE place_images 
+            SET download_status = 'downloaded', local_path = ?, downloaded_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', downloaded_records)
+        conn.commit()
+        conn.close()
+
+    print(f"\nDownload finished! {success}/{len(tasks)} stored in '{IMAGES_DIR}'. DB statuses updated.")
 
 if __name__ == "__main__":
-    import sys
-    filter_id = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    download_all_images(cafe_id_filter=filter_id)
+    parser = argparse.ArgumentParser(description="Google Maps High-Res Photo Downloader")
+    parser.add_argument("--cafe-id", type=int, help="Filter by specific cafe ID")
+    parser.add_argument("--all", action="store_true", help="Download all images including customer review photos")
+    parser.add_argument("--limit", type=int, help="Limit number of images to download")
+    args = parser.parse_args()
+
+    download_images(
+        cafe_id_filter=args.cafe_id,
+        only_owner=not args.all,
+        limit=args.limit
+    )
