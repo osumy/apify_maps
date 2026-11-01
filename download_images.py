@@ -2,7 +2,8 @@
 High-Resolution Photo Downloader for Google Maps
 =================================================
 Downloads uncompressed camera-master WebP (=s0-rw) photos directly from place_images table.
-Supports filtering by owner photos, tracking download progress in database, and multi-threading.
+Supports filtering by owner photos, tracking download progress in database, multi-threading,
+and frequent periodic database commits for reliable resumability on Google Colab / Kaggle.
 """
 
 import os
@@ -30,6 +31,26 @@ IMAGES_DIR = os.getenv("IMAGES_DIR", os.path.join(BASE_DIR, "downloaded_images")
 MAX_WORKERS = int(os.getenv("MAX_IMAGE_WORKERS", "25"))
 DEFAULT_ONLY_OWNER = os.getenv("DOWNLOAD_ONLY_OWNER", "true").lower() in ("true", "1", "yes")
 
+def get_db_connection(db_path, timeout=60.0):
+    """
+    Returns an optimized sqlite3 connection.
+    Configures busy timeout and safe journal mode for both local SSDs and network/FUSE drives (e.g. Google Drive).
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=timeout)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout = 60000;")
+        is_fuse_or_drive = "drive" in db_path.lower() or "/content/drive" in db_path
+        if is_fuse_or_drive:
+            conn.execute("PRAGMA journal_mode = TRUNCATE;")
+        else:
+            conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+    except Exception:
+        pass
+    return conn
+
 def clean_high_res_url(url):
     if not url:
         return ""
@@ -50,7 +71,7 @@ def download_single_image(session, url, save_path):
                 f.write(resp.content)
             return True, "downloaded"
         elif resp.status_code == 400:
-            # Fallback to standard url without =s0-rw if =s0-rw is rejected for rare images
+            # Fallback to standard high-res url without =s0-rw if =s0-rw is rejected for rare images
             base_url = url.rsplit("=", 1)[0] + "=w1600-h1200-rw"
             r2 = session.get(base_url, headers=headers, timeout=20)
             if r2.status_code == 200:
@@ -61,14 +82,56 @@ def download_single_image(session, url, save_path):
     except Exception as e:
         return False, str(e)
 
-def download_images(cafe_id_filter=None, only_owner=DEFAULT_ONLY_OWNER, limit=None):
-    if not os.path.exists(OUTPUT_DB_PATH):
-        print(f"Error: Database not found at '{OUTPUT_DB_PATH}'. Please run crawler or migration first.")
+def _commit_download_records(output_db_path, records):
+    """Helper to commit a batch of downloaded image records into SQLite."""
+    if not records:
         return
+    try:
+        conn = get_db_connection(output_db_path)
+        cur = conn.cursor()
+        cur.executemany('''
+            UPDATE place_images 
+            SET download_status = 'downloaded', local_path = ?, downloaded_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', records)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Warning: Failed to update download status in database: {e}")
 
-    os.makedirs(IMAGES_DIR, exist_ok=True)
+def download_images(
+    output_db_path=None,
+    images_dir=None,
+    cafe_id_filter=None,
+    only_owner=None,
+    limit=None,
+    max_workers=None,
+    batch_commit_size=100,
+    progress_bar=True
+):
+    """
+    Downloads images with concurrent workers, incremental batch database commits,
+    and progress bar tracking.
+    """
+    output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
+    images_dir = images_dir or os.getenv("IMAGES_DIR", IMAGES_DIR)
+    max_workers = int(max_workers or os.getenv("MAX_IMAGE_WORKERS", MAX_WORKERS))
+    only_owner = DEFAULT_ONLY_OWNER if only_owner is None else bool(only_owner)
 
-    conn = sqlite3.connect(OUTPUT_DB_PATH)
+    if not os.path.exists(output_db_path):
+        print(f"Error: Database not found at '{output_db_path}'. Please run crawler or migration first.")
+        return {
+            "total": 0,
+            "success": 0,
+            "already_done": 0,
+            "failed": 0,
+            "images_dir": images_dir,
+            "error": "database_not_found"
+        }
+
+    os.makedirs(images_dir, exist_ok=True)
+
+    conn = get_db_connection(output_db_path)
     cur = conn.cursor()
 
     conditions = ["download_status != 'downloaded'"]
@@ -83,7 +146,7 @@ def download_images(cafe_id_filter=None, only_owner=DEFAULT_ONLY_OWNER, limit=No
 
     where_clause = " WHERE " + " AND ".join(conditions)
     query = f"SELECT id, cafe_id, source_type, high_res_url, image_url FROM place_images {where_clause}"
-    if limit:
+    if limit is not None:
         query += f" LIMIT {int(limit)}"
 
     rows = cur.execute(query, params).fetchall()
@@ -93,28 +156,43 @@ def download_images(cafe_id_filter=None, only_owner=DEFAULT_ONLY_OWNER, limit=No
     print(f"Found {total_images} images to download (Filters: only_owner={only_owner}, cafe_id={cafe_id_filter})")
     if total_images == 0:
         print("No pending images found.")
-        return
+        return {
+            "total": 0,
+            "success": 0,
+            "already_done": 0,
+            "failed": 0,
+            "images_dir": images_dir,
+            "status": "up_to_date"
+        }
 
     tasks = []
     for img_id, cid, src_type, high_res, raw_url in rows:
         url = clean_high_res_url(high_res) if high_res else clean_high_res_url(raw_url)
         if not url:
             continue
-        cafe_dir = os.path.join(IMAGES_DIR, str(cid))
+        cafe_dir = os.path.join(images_dir, str(cid))
         os.makedirs(cafe_dir, exist_ok=True)
         filename = f"{src_type}_{img_id}.webp"
         save_path = os.path.join(cafe_dir, filename)
         tasks.append((img_id, cid, url, save_path))
 
-    print(f"Starting downloads with {MAX_WORKERS} workers...")
+    print(f"Starting downloads with {max_workers} workers into '{images_dir}'...")
     completed = 0
     success = 0
     already_done = 0
-    downloaded_records = []
+    pending_commits = []
 
     session = requests.Session()
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    pbar = None
+    if progress_bar:
+        try:
+            from tqdm.auto import tqdm
+            pbar = tqdm(total=len(tasks), desc="Downloading Photos", unit="img")
+        except ImportError:
+            pbar = None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_task = {
             executor.submit(download_single_image, session, t[2], t[3]): t for t in tasks
         }
@@ -127,36 +205,58 @@ def download_images(cafe_id_filter=None, only_owner=DEFAULT_ONLY_OWNER, limit=No
                     success += 1
                     if msg == "already_exists":
                         already_done += 1
-                    downloaded_records.append((save_path, img_id))
-                completed += 1
-                if completed % 100 == 0 or completed == len(tasks):
-                    print(f"Progress: {completed}/{len(tasks)} (Success: {success}, Existing: {already_done})")
+                    pending_commits.append((save_path, img_id))
             except Exception:
                 pass
 
-    # Batch update download status in database
-    if downloaded_records:
-        conn = sqlite3.connect(OUTPUT_DB_PATH)
-        cur = conn.cursor()
-        cur.executemany('''
-            UPDATE place_images 
-            SET download_status = 'downloaded', local_path = ?, downloaded_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        ''', downloaded_records)
-        conn.commit()
-        conn.close()
+            completed += 1
 
-    print(f"\nDownload finished! {success}/{len(tasks)} stored in '{IMAGES_DIR}'. DB statuses updated.")
+            if pbar:
+                pbar.update(1)
+                pbar.set_postfix({"ok": success, "exists": already_done})
+            elif completed % 100 == 0 or completed == len(tasks):
+                print(f"Progress: {completed}/{len(tasks)} (Success: {success}, Existing: {already_done})")
+
+            # Batch commit to database periodically to prevent data loss on unexpected disconnects
+            if len(pending_commits) >= batch_commit_size:
+                _commit_download_records(output_db_path, pending_commits)
+                pending_commits = []
+
+    if pbar:
+        pbar.close()
+
+    # Commit any remaining uncommitted records
+    if pending_commits:
+        _commit_download_records(output_db_path, pending_commits)
+        pending_commits = []
+
+    print(f"\nDownload finished! {success}/{len(tasks)} stored in '{images_dir}'. DB statuses updated.")
+    return {
+        "total": len(tasks),
+        "success": success,
+        "already_done": already_done,
+        "failed": len(tasks) - success,
+        "images_dir": images_dir,
+        "status": "completed"
+    }
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Google Maps High-Res Photo Downloader")
-    parser.add_argument("--cafe-id", type=int, help="Filter by specific cafe ID")
-    parser.add_argument("--all", action="store_true", help="Download all images including customer review photos")
-    parser.add_argument("--limit", type=int, help="Limit number of images to download")
-    args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="High-Resolution Photo Downloader for Google Maps")
+    parser.add_argument("cafe_id", nargs="?", type=int, default=None, help="Specific cafe ID to download photos for")
+    parser.add_argument("--db", type=str, default=None, help="Path to google_maps.db")
+    parser.add_argument("--images-dir", type=str, default=None, help="Directory to save downloaded photos")
+    parser.add_argument("--limit", type=int, default=None, help="Max images to download")
+    parser.add_argument("--workers", type=int, default=None, help="Number of concurrent download threads")
+    parser.add_argument("--all-photos", action="store_true", help="Download all photos including visitor reviews")
+    parser.add_argument("--batch-commit", type=int, default=100, help="DB commit batch size")
 
+    args = parser.parse_args()
     download_images(
+        output_db_path=args.db,
+        images_dir=args.images_dir,
         cafe_id_filter=args.cafe_id,
-        only_owner=not args.all,
-        limit=args.limit
+        only_owner=not args.all_photos if args.all_photos else None,
+        limit=args.limit,
+        max_workers=args.workers,
+        batch_commit_size=args.batch_commit
     )
