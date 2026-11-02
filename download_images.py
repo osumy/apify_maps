@@ -26,10 +26,25 @@ def load_dotenv():
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(BASE_DIR, "google_maps.db"))
-IMAGES_DIR = os.getenv("IMAGES_DIR", os.path.join(BASE_DIR, "downloaded_images"))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(DATA_DIR, "google_maps.db"))
+IMAGES_DIR = os.getenv("IMAGES_DIR", os.path.join(DATA_DIR, "downloaded_images"))
 MAX_WORKERS = int(os.getenv("MAX_IMAGE_WORKERS", "25"))
 DEFAULT_ONLY_OWNER = os.getenv("DOWNLOAD_ONLY_OWNER", "true").lower() in ("true", "1", "yes")
+
+def resolve_data_path(file_path):
+    """Smartly resolves a file path, checking data/ and BASE_DIR as fallbacks if not found directly."""
+    if not file_path:
+        return file_path
+    if os.path.exists(file_path):
+        return file_path
+    data_cand = os.path.join(DATA_DIR, os.path.basename(file_path))
+    if os.path.exists(data_cand):
+        return data_cand
+    root_cand = os.path.join(BASE_DIR, os.path.basename(file_path))
+    if os.path.exists(root_cand):
+        return root_cand
+    return file_path
 
 def get_db_connection(db_path, timeout=60.0):
     """
@@ -113,8 +128,12 @@ def download_images(
     Downloads images with concurrent workers, incremental batch database commits,
     and progress bar tracking.
     """
-    output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
+    output_db_path = resolve_data_path(output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH))
     images_dir = images_dir or os.getenv("IMAGES_DIR", IMAGES_DIR)
+    if not os.path.isabs(images_dir) and not images_dir.startswith("data"):
+        data_images_cand = os.path.join(DATA_DIR, os.path.basename(images_dir))
+        if os.path.exists(data_images_cand) or not os.path.exists(images_dir):
+            images_dir = data_images_cand
     max_workers = int(max_workers or os.getenv("MAX_IMAGE_WORKERS", MAX_WORKERS))
     only_owner = DEFAULT_ONLY_OWNER if only_owner is None else bool(only_owner)
 
@@ -205,7 +224,8 @@ def download_images(
                     success += 1
                     if msg == "already_exists":
                         already_done += 1
-                    pending_commits.append((save_path, img_id))
+                    rel_save_path = os.path.relpath(save_path, BASE_DIR).replace("\\", "/")
+                    pending_commits.append((rel_save_path, img_id))
             except Exception:
                 pass
 

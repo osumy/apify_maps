@@ -25,11 +25,14 @@ invalid_keys.txt
 
 # Downloaded Assets
 downloaded_images/
+data/downloaded_images/
 
 # Raw JSONL Archives & Backups
 *.jsonl
 *.db.bak
 benchmark_results.json
+data/*.jsonl
+data/*.db.bak
 
 # SQLite databases (uncomment if you wish to ignore databases in future runs)
 # *.db

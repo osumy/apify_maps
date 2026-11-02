@@ -42,12 +42,12 @@ A robust, fault-tolerant, and high-throughput data extraction pipeline designed 
 ```mermaid
 flowchart LR
     KM[key_manager.py<br/>Multi-Key Pool & Health Check] -->|Healthy Client & Auto-Failover| B[run_crawler.py]
-    A[Source SQLite DB<br/>Table: cafes_cafe] -->|Pending Coordinates & Names| B
+    A[Source SQLite DB<br/>data/cafes_cafe_shard00.db] -->|Pending Coordinates & Names| B
     B -->|Batched URLs & Language: fa| C[Apify Actor<br/>crawler-google-places]
     C -->|Places, Reviews, Images JSON| B
-    B -->|Parsed Fields & Raw JSON| D[(Output SQLite DB<br/>google_maps.db)]
+    B -->|Parsed Fields & Raw JSON| D[(Output SQLite DB<br/>data/google_maps.db)]
     D -->|High-Res URLs =s0-rw| E[download_images.py]
-    E -->|Concurrent WebP Downloads| F[downloaded_images/<br/>cafe_id/source_id.webp]
+    E -->|Concurrent WebP Downloads| F[data/downloaded_images/<br/>cafe_id/source_id.webp]
 ```
 
 ---
@@ -97,13 +97,13 @@ Open `.env` and provide your Apify API token along with any custom path override
 APIFY_TOKEN=apify_api_xxxxxxxxxxxxxxxxxxxx
 
 # Source database containing input cafes with coordinates (table: cafes_cafe)
-SOURCE_DB_PATH=cafes_cafe_shard00.db
+SOURCE_DB_PATH=data/cafes_cafe_shard00.db
 
 # Output SQLite database file path
-OUTPUT_DB_PATH=google_maps_raw.db
+OUTPUT_DB_PATH=data/google_maps.db
 
 # Output directory for downloaded images
-IMAGES_DIR=downloaded_images
+IMAGES_DIR=data/downloaded_images
 
 # Concurrency level for image downloads
 MAX_IMAGE_WORKERS=25
@@ -249,14 +249,14 @@ Each crawler run initializes the target database and builds an index of previous
 
 ### Zero Data Loss Dual-Storage Architecture
 The system decouples raw extraction from analytical querying:
-1. **Raw Storage (`google_maps_raw.jsonl`):** Each raw JSON payload returned by Apify is preserved 100% intact as append-only JSON Lines. If Google changes or adds fields in the future, zero data is lost.
-2. **Clean Relational DB (`google_maps.db`):** Highly normalized SQLite tables without redundant text dumps, indexed for fast querying, filtering, and joining.
+1. **Raw Storage (`data/google_maps_raw.jsonl`):** Each raw JSON payload returned by Apify is preserved 100% intact as append-only JSON Lines. If Google changes or adds fields in the future, zero data is lost.
+2. **Clean Relational DB (`data/google_maps.db`):** Highly normalized SQLite tables without redundant text dumps, indexed for fast querying, filtering, and joining.
 
 ---
 
 ## Database Schema Reference
 
-The relational database (`google_maps.db`) consists of dedicated, indexed tables:
+The relational database (`data/google_maps.db`) consists of dedicated, indexed tables:
 
 ### 1. Table: `places` (Core Venue Profile)
 | Column | Type | Description |
@@ -323,15 +323,10 @@ Extracted from Google Maps `additionalInfo`:
 
 ```text
 apify_maps/
-├── google_maps_scraper.ipynb # Google Colab / Kaggle interactive execution notebook
-├── .env.example              # Sample environment configuration
-├── .gitignore                # Git exclusion rules
-├── requirements.txt          # Python dependencies (apify-client, requests, tqdm)
-├── run_crawler.py            # Main crawling & ingestion engine with top-5 matching
-├── cafe_matcher.py           # Strict multi-factor matching engine (Haversine + Phonetic)
-├── key_manager.py            # Multi-key pool & health inspector
-├── download_images.py        # Modular multi-threaded high-res WebP downloader
-├── audit_and_clean_db.py     # Database hygiene & retroactive mismatch audit CLI
+├── data/                     # Dedicated input, output & media storage directory
+│   ├── google_maps.db        # Clean, normalized relational SQLite database
+│   ├── google_maps_raw.jsonl # Append-only raw JSONL archive (untracked)
+│   └── downloaded_images/    # High-res downloaded WebP images (untracked)
 ├── docs/
 │   ├── MATCHING_SPECIFICATION.md # Full engineering specification of SMPMS
 │   └── schemas/              # Apify crawler input & output JSON schemas
@@ -341,8 +336,16 @@ apify_maps/
 │   ├── __init__.py
 │   ├── test_cafe_matcher.py  # Tests for matching engine & phonetic rules
 │   └── test_key_manager.py   # Tests for key rotation & failover
-├── README.md                 # Complete documentation
-└── google_maps.db            # Clean, normalized relational database
+├── run_crawler.py            # Main crawling & ingestion engine with top-5 matching
+├── cafe_matcher.py           # Strict multi-factor matching engine (Haversine + Phonetic)
+├── key_manager.py            # Multi-key pool & health inspector
+├── download_images.py        # Modular multi-threaded high-res WebP downloader
+├── audit_and_clean_db.py     # Database hygiene & retroactive mismatch audit CLI
+├── google_maps_scraper.ipynb # Google Colab / Kaggle interactive execution notebook
+├── requirements.txt          # Python dependencies (apify-client, requests, tqdm)
+├── .env.example              # Sample environment configuration
+├── .gitignore                # Git exclusion rules
+└── README.md                 # Complete documentation
 ```
 
 ---

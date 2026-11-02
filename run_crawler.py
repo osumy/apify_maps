@@ -31,9 +31,24 @@ def load_dotenv():
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", os.path.join(BASE_DIR, "cafes_cafe_shard00.db"))
-OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(BASE_DIR, "google_maps.db"))
-RAW_JSONL_PATH = os.getenv("RAW_JSONL_PATH", os.path.join(BASE_DIR, "google_maps_raw.jsonl"))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", os.path.join(DATA_DIR, "cafes_cafe_shard00.db"))
+OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(DATA_DIR, "google_maps.db"))
+RAW_JSONL_PATH = os.getenv("RAW_JSONL_PATH", os.path.join(DATA_DIR, "google_maps_raw.jsonl"))
+
+def resolve_data_path(file_path):
+    """Smartly resolves a file path, checking data/ and BASE_DIR as fallbacks if not found directly."""
+    if not file_path:
+        return file_path
+    if os.path.exists(file_path):
+        return file_path
+    data_cand = os.path.join(DATA_DIR, os.path.basename(file_path))
+    if os.path.exists(data_cand):
+        return data_cand
+    root_cand = os.path.join(BASE_DIR, os.path.basename(file_path))
+    if os.path.exists(root_cand):
+        return root_cand
+    return file_path
 
 # Scraper Settings
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
@@ -257,8 +272,8 @@ def build_search_url(name, lat, lng, zoom=ZOOM_LEVEL):
     return f"https://www.google.com/maps/search/{encoded_name}/@{lat},{lng},{zoom}z"
 
 def get_pending_cafes(source_db_path=None, output_db_path=None, limit=None, zoom=None):
-    source_db_path = source_db_path or os.getenv("SOURCE_DB_PATH", SOURCE_DB_PATH)
-    output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
+    source_db_path = resolve_data_path(source_db_path or os.getenv("SOURCE_DB_PATH", SOURCE_DB_PATH))
+    output_db_path = resolve_data_path(output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH))
     zoom = int(zoom if zoom is not None else os.getenv("ZOOM_LEVEL", ZOOM_LEVEL))
 
     init_output_db(output_db_path)
@@ -273,7 +288,7 @@ def get_pending_cafes(source_db_path=None, output_db_path=None, limit=None, zoom
     if not os.path.exists(source_db_path):
         raise FileNotFoundError(
             f"Source database not found at '{source_db_path}'. "
-            "Please check the path or set SOURCE_DB_PATH in your .env or notebook."
+            "Please place your cafes database (e.g. cafes_cafe_shard00.db) in the 'data/' folder or set SOURCE_DB_PATH."
         )
 
     src_conn = get_db_connection(source_db_path)
@@ -315,8 +330,8 @@ def get_pending_cafes(source_db_path=None, output_db_path=None, limit=None, zoom
     return pending
 
 def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_jsonl_path=None, threshold=MATCH_THRESHOLD):
-    output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
-    raw_jsonl_path = raw_jsonl_path or os.getenv("RAW_JSONL_PATH", RAW_JSONL_PATH)
+    output_db_path = resolve_data_path(output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH))
+    raw_jsonl_path = resolve_data_path(raw_jsonl_path or os.getenv("RAW_JSONL_PATH", RAW_JSONL_PATH))
 
     init_output_db(output_db_path)
     conn = get_db_connection(output_db_path)
@@ -589,9 +604,9 @@ def run_scraper(
     Supports modular arguments, live progress tracking, auto-rotation across multiple keys,
     strict matching, and resumability.
     """
-    source_db_path = source_db_path or os.getenv("SOURCE_DB_PATH", SOURCE_DB_PATH)
-    output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
-    raw_jsonl_path = raw_jsonl_path or os.getenv("RAW_JSONL_PATH", RAW_JSONL_PATH)
+    source_db_path = resolve_data_path(source_db_path or os.getenv("SOURCE_DB_PATH", SOURCE_DB_PATH))
+    output_db_path = resolve_data_path(output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH))
+    raw_jsonl_path = resolve_data_path(raw_jsonl_path or os.getenv("RAW_JSONL_PATH", RAW_JSONL_PATH))
     batch_size = int(batch_size or os.getenv("BATCH_SIZE", "50"))
     max_images = int(max_images if max_images is not None else os.getenv("MAX_IMAGES_PER_PLACE", "50"))
     max_reviews = int(max_reviews if max_reviews is not None else os.getenv("MAX_REVIEWS_PER_PLACE", "15"))

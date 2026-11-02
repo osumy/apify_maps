@@ -26,10 +26,27 @@ def load_dotenv():
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(BASE_DIR, "google_maps.db"))
-SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", os.path.join(BASE_DIR, "cafes_cafe_shard00.db"))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(DATA_DIR, "google_maps.db"))
+SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", os.path.join(DATA_DIR, "cafes_cafe_shard00.db"))
 
-def audit_database(output_db=OUTPUT_DB_PATH, source_db=SOURCE_DB_PATH, threshold=0.80, apply_changes=False):
+def resolve_data_path(file_path):
+    """Smartly resolves a file path, checking data/ and BASE_DIR as fallbacks if not found directly."""
+    if not file_path:
+        return file_path
+    if os.path.exists(file_path):
+        return file_path
+    data_cand = os.path.join(DATA_DIR, os.path.basename(file_path))
+    if os.path.exists(data_cand):
+        return data_cand
+    root_cand = os.path.join(BASE_DIR, os.path.basename(file_path))
+    if os.path.exists(root_cand):
+        return root_cand
+    return file_path
+
+def audit_database(output_db=None, source_db=None, threshold=0.80, apply_changes=False):
+    output_db = resolve_data_path(output_db or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH))
+    source_db = resolve_data_path(source_db or os.getenv("SOURCE_DB_PATH", SOURCE_DB_PATH))
     if not os.path.exists(output_db):
         print(f"Error: Output database not found at {output_db}")
         return
@@ -149,8 +166,10 @@ def audit_database(output_db=OUTPUT_DB_PATH, source_db=SOURCE_DB_PATH, threshold
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audit and clean false cafe matches in google_maps.db")
+    parser.add_argument("--db", type=str, default=None, help="Path to google_maps.db (default: data/google_maps.db)")
+    parser.add_argument("--source-db", type=str, default=None, help="Path to cafes_cafe_shard00.db (default: data/cafes_cafe_shard00.db)")
     parser.add_argument("--threshold", type=float, default=0.80, help="Strict composite score threshold (default 0.80)")
     parser.add_argument("--apply", action="store_true", help="Apply cleanup changes to the database")
     args = parser.parse_args()
 
-    audit_database(threshold=args.threshold, apply_changes=args.apply)
+    audit_database(output_db=args.db, source_db=args.source_db, threshold=args.threshold, apply_changes=args.apply)
