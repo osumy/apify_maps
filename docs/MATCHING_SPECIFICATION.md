@@ -255,9 +255,9 @@ MAX_DISTANCE_IDENTITY_CUTOFF=350
 
 ### 9.2 Python Reference Implementation
 The official implementation is housed in:
-- Engine: [`cafe_matcher.py`](file:///c:/Users/amira/Desktop/apify_maps/cafe_matcher.py)
-- Test Suite: [`test_cafe_matcher.py`](file:///c:/Users/amira/Desktop/apify_maps/test_cafe_matcher.py)
-- Audit Tool: [`audit_and_clean_db.py`](file:///c:/Users/amira/Desktop/apify_maps/audit_and_clean_db.py)
+- Engine: [`cafe_matcher.py`](../cafe_matcher.py)
+- Test Suite: [`test_cafe_matcher.py`](../test_cafe_matcher.py)
+- Audit Tool: [`audit_and_clean_db.py`](../audit_and_clean_db.py)
 
 ### 9.3 Porting to Other Languages (Go / TypeScript / Python)
 Any implementation conforming to this specification must satisfy:

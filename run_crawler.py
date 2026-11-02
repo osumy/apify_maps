@@ -31,7 +31,7 @@ def load_dotenv():
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", r"c:\Users\amira\Desktop\crawler\cafes_cafe_shard00.db")
+SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", os.path.join(BASE_DIR, "cafes_cafe_shard00.db"))
 OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(BASE_DIR, "google_maps.db"))
 RAW_JSONL_PATH = os.getenv("RAW_JSONL_PATH", os.path.join(BASE_DIR, "google_maps_raw.jsonl"))
 

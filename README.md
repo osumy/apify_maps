@@ -97,7 +97,7 @@ Open `.env` and provide your Apify API token along with any custom path override
 APIFY_TOKEN=apify_api_xxxxxxxxxxxxxxxxxxxx
 
 # Source database containing input cafes with coordinates (table: cafes_cafe)
-SOURCE_DB_PATH=c:\Users\amira\Desktop\crawler\cafes_cafe_shard00.db
+SOURCE_DB_PATH=cafes_cafe_shard00.db
 
 # Output SQLite database file path
 OUTPUT_DB_PATH=google_maps_raw.db
@@ -160,14 +160,14 @@ Sample output:
 ================================================================================================
 #   | Token                  | User / Email                 | Tier   | Limit   | Used    | Rem.    | Status
 ------------------------------------------------------------------------------------------------
-1   | apify_api_eJGiV...2wP8tx | pronounced_zaibatsu (amira.. | FREE   | $10.00  | $6.95   | $3.05   | 🟢 ACTIVE
-2   | apify_api_o0Y2k...3NBzco | AliThz-Pro (alithz.pro@gmai) | FREE   | $5.00   | $0.00   | $5.00   | 🟢 ACTIVE
-3   | apify_api_SOuyK...4eozU9 | Unknown                      | UNKNOWN | -       | -       | -       | 🔴 INVALID
-4   | apify_api_HLftj...24K5oM | fair_laureate (ali.thz83@g.. | FREE   | $5.00   | $0.00   | $5.00   | 🟢 ACTIVE
+1   | apify_api_AbCd1...9xYz01 | dev_primary (user1@example.) | FREE   | $10.00  | $6.95   | $3.05   | 🟢 ACTIVE
+2   | apify_api_EfGh2...8wVu23 | backup_team (user2@example.) | FREE   | $5.00   | $0.00   | $5.00   | 🟢 ACTIVE
+3   | apify_api_IjKl3...7tSr45 | Unknown                      | UNKNOWN | -       | -       | -       | 🔴 INVALID
+4   | apify_api_MnOp4...6qPo67 | spare_pool (user3@example.c) | FREE   | $5.00   | $0.00   | $5.00   | 🟢 ACTIVE
 ------------------------------------------------------------------------------------------------
 Summary: Total Keys: 4 | Active: 3 | Exhausted: 0 | Invalid: 1
 Total Usable Balance: $13.05 USD
-Current Working Key: apify_api_eJGiV...2wP8tx (User: pronounced_zaibatsu, Rem: $3.05)
+Current Working Key: apify_api_AbCd1...9xYz01 (User: dev_primary, Rem: $3.05)
 ================================================================================================
 ```
 
@@ -188,7 +188,7 @@ python download_images.py 32
 
 ### 4. Running on Google Colab or Kaggle (with Google Drive Storage)
 
-A ready-to-run Jupyter notebook [`google_maps_scraper.ipynb`](file:///c:/Users/amira/Desktop/apify_maps/google_maps_scraper.ipynb) is included for cloud environments (Google Colab / Kaggle):
+A ready-to-run Jupyter notebook [`google_maps_scraper.ipynb`](google_maps_scraper.ipynb) is included for cloud environments (Google Colab / Kaggle):
 
 1. Open `google_maps_scraper.ipynb` in Google Colab or Kaggle.
 2. Run the cells in sequence:

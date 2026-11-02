@@ -27,7 +27,7 @@ load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(BASE_DIR, "google_maps.db"))
-SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", r"c:\Users\amira\Desktop\crawler\cafes_cafe_shard00.db")
+SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", os.path.join(BASE_DIR, "cafes_cafe_shard00.db"))
 
 def audit_database(output_db=OUTPUT_DB_PATH, source_db=SOURCE_DB_PATH, threshold=0.80, apply_changes=False):
     if not os.path.exists(output_db):
