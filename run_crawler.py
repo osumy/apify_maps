@@ -169,14 +169,57 @@ def init_output_db(output_db_path=None):
         status TEXT,
         name_match_score REAL,
         distance_meters REAL,
+        neighborhood TEXT,
+        located_in TEXT,
+        floor TEXT,
+        menu TEXT,
+        owner_description TEXT,
+        plus_code TEXT,
+        kgmid TEXT,
+        reviews_distribution TEXT,
+        reviews_distribution_1_star INTEGER,
+        reviews_distribution_2_star INTEGER,
+        reviews_distribution_3_star INTEGER,
+        reviews_distribution_4_star INTEGER,
+        reviews_distribution_5_star INTEGER,
+        emails TEXT,
+        phones TEXT,
+        instagrams TEXT,
+        facebooks TEXT,
+        twitters TEXT,
+        social_profiles TEXT,
         scraped_at TEXT
     )
     ''')
 
-    try:
-        cur.execute("ALTER TABLE places ADD COLUMN distance_meters REAL")
-    except Exception:
-        pass
+    # Migration alter statements for backwards compatibility
+    new_place_cols = [
+        ("distance_meters", "REAL"),
+        ("neighborhood", "TEXT"),
+        ("located_in", "TEXT"),
+        ("floor", "TEXT"),
+        ("menu", "TEXT"),
+        ("owner_description", "TEXT"),
+        ("plus_code", "TEXT"),
+        ("kgmid", "TEXT"),
+        ("reviews_distribution", "TEXT"),
+        ("reviews_distribution_1_star", "INTEGER"),
+        ("reviews_distribution_2_star", "INTEGER"),
+        ("reviews_distribution_3_star", "INTEGER"),
+        ("reviews_distribution_4_star", "INTEGER"),
+        ("reviews_distribution_5_star", "INTEGER"),
+        ("emails", "TEXT"),
+        ("phones", "TEXT"),
+        ("instagrams", "TEXT"),
+        ("facebooks", "TEXT"),
+        ("twitters", "TEXT"),
+        ("social_profiles", "TEXT"),
+    ]
+    for col, col_type in new_place_cols:
+        try:
+            cur.execute(f"ALTER TABLE places ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass
 
     cur.execute('''
     CREATE TABLE IF NOT EXISTS place_images (
@@ -214,11 +257,41 @@ def init_output_db(output_db_path=None):
         detailed_food_rating REAL,
         detailed_service_rating REAL,
         detailed_atmosphere_rating REAL,
+        detailed_room_rating REAL,
+        detailed_location_rating REAL,
         response_from_owner_text TEXT,
         response_from_owner_date TEXT,
+        review_url TEXT,
+        reviewer_url TEXT,
+        review_context TEXT,
+        context_order_type TEXT,
+        context_meal_type TEXT,
+        context_price_per_person TEXT,
+        context_noise_level TEXT,
+        text_translated TEXT,
+        translated_language TEXT,
         FOREIGN KEY (cafe_id) REFERENCES places(cafe_id)
     )
     ''')
+
+    new_review_cols = [
+        ("detailed_room_rating", "REAL"),
+        ("detailed_location_rating", "REAL"),
+        ("review_url", "TEXT"),
+        ("reviewer_url", "TEXT"),
+        ("review_context", "TEXT"),
+        ("context_order_type", "TEXT"),
+        ("context_meal_type", "TEXT"),
+        ("context_price_per_person", "TEXT"),
+        ("context_noise_level", "TEXT"),
+        ("text_translated", "TEXT"),
+        ("translated_language", "TEXT"),
+    ]
+    for col, col_type in new_review_cols:
+        try:
+            cur.execute(f"ALTER TABLE place_reviews ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass
 
     cur.execute('''
     CREATE TABLE IF NOT EXISTS place_attributes (
@@ -405,6 +478,28 @@ def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_json
             scraped_lng = loc.get("lng")
             title = best_item.get("title") or cafe["name"]
 
+            # Parse reviews distribution
+            rev_dist = best_item.get("reviewsDistribution") or {}
+            rev_dist_str = json.dumps(rev_dist, ensure_ascii=False) if rev_dist else None
+            star1 = rev_dist.get("oneStar")
+            star2 = rev_dist.get("twoStar")
+            star3 = rev_dist.get("threeStar")
+            star4 = rev_dist.get("fourStar")
+            star5 = rev_dist.get("fiveStar")
+
+            # Parse contacts & socials
+            emails = json.dumps(best_item.get("emails", []), ensure_ascii=False) if best_item.get("emails") else None
+            phones = json.dumps(best_item.get("phones", []), ensure_ascii=False) if best_item.get("phones") else None
+            instagrams = json.dumps(best_item.get("instagrams", []), ensure_ascii=False) if best_item.get("instagrams") else None
+            facebooks = json.dumps(best_item.get("facebooks", []), ensure_ascii=False) if best_item.get("facebooks") else None
+            twitters = json.dumps(best_item.get("twitters", []), ensure_ascii=False) if best_item.get("twitters") else None
+
+            soc_profiles = {}
+            for sp_key in ["instagramProfiles", "facebookProfiles", "twitterProfiles", "youtubeProfiles", "tiktokProfiles"]:
+                if best_item.get(sp_key):
+                    soc_profiles[sp_key] = best_item[sp_key]
+            soc_profiles_str = json.dumps(soc_profiles, ensure_ascii=False) if soc_profiles else None
+
             cur.execute('''
                 INSERT OR REPLACE INTO places (
                     cafe_id, place_id, cid, fid, original_name, title, category_name, categories,
@@ -412,8 +507,14 @@ def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_json
                     latitude, longitude, phone, phone_unformatted, website,
                     total_score, reviews_count, images_count, price_level,
                     is_claimed, is_permanently_closed, is_temporarily_closed,
-                    search_url, google_maps_url, status, name_match_score, distance_meters, scraped_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    search_url, google_maps_url, status, name_match_score, distance_meters,
+                    neighborhood, located_in, floor, menu, owner_description,
+                    plus_code, kgmid, reviews_distribution,
+                    reviews_distribution_1_star, reviews_distribution_2_star,
+                    reviews_distribution_3_star, reviews_distribution_4_star,
+                    reviews_distribution_5_star, emails, phones, instagrams,
+                    facebooks, twitters, social_profiles, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 cid,
                 best_item.get("placeId"),
@@ -446,6 +547,16 @@ def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_json
                 "success",
                 match_res.composite_score,
                 round(match_res.distance_meters, 1),
+                best_item.get("neighborhood"),
+                best_item.get("locatedIn"),
+                best_item.get("floor"),
+                best_item.get("menu"),
+                best_item.get("ownerDescription"),
+                best_item.get("plusCode"),
+                best_item.get("kgmid"),
+                rev_dist_str,
+                star1, star2, star3, star4, star5,
+                emails, phones, instagrams, facebooks, twitters, soc_profiles_str,
                 best_item.get("scrapedAt") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             ))
 
@@ -493,14 +604,25 @@ def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_json
                 if not rid:
                     continue
                 det_rating = r.get("reviewDetailedRating") or {}
+                ctx = r.get("reviewContext") or {}
+                ctx_str = json.dumps(ctx, ensure_ascii=False) if ctx else None
+                order_type = ctx.get("نوع سفارش") or ctx.get("Dine in") or ctx.get("Takeout")
+                meal_type = ctx.get("وعده غذایی") or ctx.get("Meal")
+                price_pp = ctx.get("قیمت برای هر نفر") or ctx.get("Price per person")
+                noise = ctx.get("سطح سروصدا") or ctx.get("Noise level")
+
                 cur.execute('''
-                    INSERT OR IGNORE INTO place_reviews (
+                    INSERT OR REPLACE INTO place_reviews (
                         review_id, cafe_id, reviewer_id, reviewer_name, reviewer_photo_url,
                         reviewer_reviews_count, is_local_guide, stars, publish_date,
                         publish_relative, likes_count, text, original_language,
                         detailed_food_rating, detailed_service_rating, detailed_atmosphere_rating,
-                        response_from_owner_text, response_from_owner_date
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        detailed_room_rating, detailed_location_rating,
+                        response_from_owner_text, response_from_owner_date,
+                        review_url, reviewer_url, review_context,
+                        context_order_type, context_meal_type, context_price_per_person,
+                        context_noise_level, text_translated, translated_language
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     rid, cid, r.get("reviewerId"), r.get("name"), r.get("reviewerPhotoUrl"),
                     r.get("reviewerNumberOfReviews"), 1 if r.get("isLocalGuide") else 0,
@@ -509,7 +631,12 @@ def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_json
                     det_rating.get("غذا") or det_rating.get("Food"),
                     det_rating.get("خدمات") or det_rating.get("Service"),
                     det_rating.get("محيط") or det_rating.get("Atmosphere"),
-                    r.get("responseFromOwnerText"), r.get("responseFromOwnerDate")
+                    det_rating.get("اتاق") or det_rating.get("Room"),
+                    det_rating.get("مکان") or det_rating.get("Location"),
+                    r.get("responseFromOwnerText"), r.get("responseFromOwnerDate"),
+                    r.get("reviewUrl"), r.get("reviewerUrl"), ctx_str,
+                    order_type, meal_type, price_pp, noise,
+                    r.get("textTranslated"), r.get("translatedLanguage")
                 ))
 
                 for ru in r.get("reviewImageUrls", []):
@@ -597,6 +724,8 @@ def run_scraper(
     match_threshold=None,
     key_manager_instance=None,
     scrape_image_authors=None,
+    scrape_contacts=None,
+    scrape_social_media_profiles=None,
     progress_bar=True
 ):
     """
@@ -615,6 +744,10 @@ def run_scraper(
     match_threshold = float(match_threshold if match_threshold is not None else os.getenv("MATCH_THRESHOLD", "0.80"))
     if scrape_image_authors is None:
         scrape_image_authors = os.getenv("SCRAPE_IMAGE_AUTHORS", "true").lower() in ("true", "1", "yes")
+    if scrape_contacts is None:
+        scrape_contacts = os.getenv("SCRAPE_CONTACTS", "false").lower() in ("true", "1", "yes")
+    if scrape_social_media_profiles is None:
+        scrape_social_media_profiles = os.getenv("SCRAPE_SOCIAL_MEDIA_PROFILES", "false").lower() in ("true", "1", "yes")
 
     km = key_manager_instance or get_default_key_manager()
     init_output_db(output_db_path)
@@ -666,6 +799,16 @@ def run_scraper(
             "scrapeImageAuthors": scrape_image_authors,
             "language": "fa"
         }
+        if scrape_contacts:
+            run_input["scrapeContacts"] = True
+        if scrape_social_media_profiles:
+            run_input["scrapeSocialMediaProfiles"] = {
+                "facebooks": True,
+                "instagrams": True,
+                "twitters": True,
+                "youtubes": False,
+                "tiktoks": False
+            }
 
         success = False
         for attempt in range(1, MAX_RETRIES + 1):
@@ -735,5 +878,23 @@ def run_scraper(
     }
 
 if __name__ == "__main__":
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    run_scraper(max_total=limit)
+    import argparse
+    parser = argparse.ArgumentParser(description="Google Maps Scraper")
+    parser.add_argument("limit", nargs="?", type=int, default=None, help="Max places to process")
+    parser.add_argument("--source-db", type=str, default=None, help="Path to source SQLite database")
+    parser.add_argument("--output-db", type=str, default=None, help="Path to output SQLite database")
+    parser.add_argument("--jsonl-path", type=str, default=None, help="Path to output JSONL file")
+    parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
+    parser.add_argument("--scrape-contacts", action="store_true", help="Enable company contacts enrichment")
+    parser.add_argument("--scrape-socials", action="store_true", help="Enable social media profiles enrichment")
+    args = parser.parse_args()
+
+    run_scraper(
+        max_total=args.limit,
+        source_db_path=args.source_db,
+        output_db_path=args.output_db,
+        raw_jsonl_path=args.jsonl_path,
+        batch_size=args.batch_size,
+        scrape_contacts=args.scrape_contacts or None,
+        scrape_social_media_profiles=args.scrape_socials or None
+    )
