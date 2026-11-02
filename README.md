@@ -95,8 +95,10 @@ cp .env.example .env
 Open `.env` and provide your Apify API token along with any custom path overrides:
 
 ```env
-# Apify API Token (Required)
-# Retrieve from: https://console.apify.com/account/integrations
+# Apify API Tokens (Multi-Key Pool - JSON list or comma-separated)
+APIFY_TOKENS='["apify_api_token1", "apify_api_token2"]'
+
+# Single Token Fallback (Optional)
 APIFY_TOKEN=apify_api_xxxxxxxxxxxxxxxxxxxx
 
 # Source database containing input cafes with coordinates (table: cafes_cafe)

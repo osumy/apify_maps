@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import json
+import ast
 import logging
 from dataclasses import dataclass, asdict
 from typing import Callable, Any, Optional, List, Dict
@@ -84,8 +85,8 @@ def mask_token(token: str) -> str:
 def load_tokens_from_env() -> List[str]:
     """
     Extracts tokens from environment variables:
-    1. APIFY_TOKENS: Comma, semicolon, or newline separated list.
-    2. APIFY_TOKEN: Single token or comma-separated tokens fallback.
+    1. APIFY_TOKENS: JSON list/dict, or comma/semicolon/newline separated list.
+    2. APIFY_TOKEN: Single token, JSON list/dict, or comma-separated tokens fallback.
     3. Optional 'apify_tokens.txt' file in current or project directory.
     """
     tokens: List[str] = []
@@ -93,12 +94,79 @@ def load_tokens_from_env() -> List[str]:
     def _add_raw(raw: str):
         if not raw:
             return
-        # Replace common separators with commas
-        normalized = raw.replace(";", ",").replace("\n", ",").replace("\r", ",")
+        cleaned = raw.strip()
+        # Handle outer quotes if passed as wrapped string in .env
+        if (cleaned.startswith("'") and cleaned.endswith("'")) or (
+            cleaned.startswith('"') and cleaned.endswith('"')
+        ):
+            cleaned = cleaned[1:-1].strip()
+
+        # Check for JSON array or object
+        if (cleaned.startswith("[") and cleaned.endswith("]")) or (
+            cleaned.startswith("{") and cleaned.endswith("}")
+        ):
+            parsed = None
+            try:
+                parsed = json.loads(cleaned)
+            except Exception:
+                try:
+                    parsed = ast.literal_eval(cleaned)
+                except Exception:
+                    parsed = None
+
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, str):
+                        tok = item.strip().strip("'\"")
+                        if tok and tok not in tokens:
+                            tokens.append(tok)
+                    elif isinstance(item, dict):
+                        for k in ("token", "key", "api_token", "apiKey"):
+                            if k in item and isinstance(item[k], str):
+                                tok = item[k].strip().strip("'\"")
+                                if tok and tok not in tokens:
+                                    tokens.append(tok)
+                                break
+                return
+            elif isinstance(parsed, dict):
+                for val in parsed.values():
+                    if isinstance(val, str):
+                        tok = val.strip().strip("'\"")
+                        if tok and tok not in tokens:
+                            tokens.append(tok)
+                    elif isinstance(val, dict):
+                        for k in ("token", "key", "api_token", "apiKey"):
+                            if k in val and isinstance(val[k], str):
+                                tok = val[k].strip().strip("'\"")
+                                if tok and tok not in tokens:
+                                    tokens.append(tok)
+                                break
+                return
+
+        # Delimiter-separated fallback: comma, semicolon, newline
+        normalized = cleaned.replace(";", ",").replace("\n", ",").replace("\r", ",")
         for part in normalized.split(","):
-            cleaned = part.strip().strip("'\"")
-            if cleaned and cleaned not in tokens:
-                tokens.append(cleaned)
+            cleaned_part = part.strip().strip("'\"")
+            if cleaned_part and cleaned_part not in tokens:
+                tokens.append(cleaned_part)
+
+    # 0. Load .env if neither APIFY_TOKENS nor APIFY_TOKEN is set in environment
+    if not os.getenv("APIFY_TOKENS") and not os.getenv("APIFY_TOKEN"):
+        for env_path in [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+            os.path.join(os.getcwd(), ".env"),
+        ]:
+            if os.path.exists(env_path):
+                try:
+                    with open(env_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line and not line.startswith("#") and "=" in line:
+                                k, v = line.split("=", 1)
+                                os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+                    break
+                except Exception as e:
+                    logger.debug(f"Could not read .env at '{env_path}': {e}")
 
     # 1. From APIFY_TOKENS variable
     _add_raw(os.getenv("APIFY_TOKENS", ""))

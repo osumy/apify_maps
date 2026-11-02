@@ -52,6 +52,38 @@ class TestApifyKeyManager(unittest.TestCase):
             # Check deduplication
             self.assertEqual(len(tokens), 5)
 
+    def test_load_tokens_from_env_json_list(self):
+        with patch.dict("os.environ", {
+            "APIFY_TOKENS": '["token_j1", "token_j2", "token_j3"]',
+            "APIFY_TOKEN": ""
+        }):
+            tokens = load_tokens_from_env()
+            self.assertEqual(tokens, ["token_j1", "token_j2", "token_j3"])
+
+    def test_load_tokens_from_env_json_dict(self):
+        with patch.dict("os.environ", {
+            "APIFY_TOKENS": '{"acc1": "token_d1", "acc2": "token_d2"}',
+            "APIFY_TOKEN": ""
+        }):
+            tokens = load_tokens_from_env()
+            self.assertEqual(tokens, ["token_d1", "token_d2"])
+
+    def test_load_tokens_from_env_json_object_list(self):
+        with patch.dict("os.environ", {
+            "APIFY_TOKENS": '[{"token": "token_o1"}, {"apiKey": "token_o2"}]',
+            "APIFY_TOKEN": ""
+        }):
+            tokens = load_tokens_from_env()
+            self.assertEqual(tokens, ["token_o1", "token_o2"])
+
+    def test_load_tokens_from_env_single_quoted_json(self):
+        with patch.dict("os.environ", {
+            "APIFY_TOKENS": "'[\"token_sq1\", \"token_sq2\"]'",
+            "APIFY_TOKEN": ""
+        }):
+            tokens = load_tokens_from_env()
+            self.assertEqual(tokens, ["token_sq1", "token_sq2"])
+
     def test_rotation_error_detection(self):
         manager = ApifyKeyManager(tokens=["token_dummy_1"])
 
