@@ -8,6 +8,7 @@ and frequent periodic database commits for reliable resumability on Google Colab
 
 import os
 import sys
+import glob
 import sqlite3
 import argparse
 import requests
@@ -33,24 +34,68 @@ MAX_WORKERS = int(os.getenv("MAX_IMAGE_WORKERS", "25"))
 DEFAULT_ONLY_OWNER = os.getenv("DOWNLOAD_ONLY_OWNER", "true").lower() in ("true", "1", "yes")
 
 def resolve_data_path(file_path):
-    """Smartly resolves a file path, checking data/ and BASE_DIR as fallbacks if not found directly."""
+    """
+    Smartly resolves a file path.
+    If given a directory, discovers database files inside.
+    Bare filenames without directories fall back to data/ or BASE_DIR.
+    """
     if not file_path:
+        return file_path
+    if os.path.isdir(file_path):
+        cands = (
+            glob.glob(os.path.join(file_path, "**/*google_maps*.db"), recursive=True) +
+            glob.glob(os.path.join(file_path, "**/*.db"), recursive=True) +
+            glob.glob(os.path.join(file_path, "**/*.sqlite*"), recursive=True)
+        )
+        if cands:
+            return cands[0]
         return file_path
     if os.path.exists(file_path):
         return file_path
-    data_cand = os.path.join(DATA_DIR, os.path.basename(file_path))
-    if os.path.exists(data_cand):
-        return data_cand
-    root_cand = os.path.join(BASE_DIR, os.path.basename(file_path))
-    if os.path.exists(root_cand):
-        return root_cand
+    parent_dir = os.path.dirname(file_path)
+    if not parent_dir:
+        data_cand = os.path.join(DATA_DIR, os.path.basename(file_path))
+        if os.path.exists(data_cand):
+            return data_cand
+        root_cand = os.path.join(BASE_DIR, os.path.basename(file_path))
+        if os.path.exists(root_cand):
+            return root_cand
     return file_path
 
-def get_db_connection(db_path, timeout=60.0):
+def get_db_connection(db_path, timeout=60.0, read_only=False):
     """
     Returns an optimized sqlite3 connection.
     Configures busy timeout and safe journal mode for both local SSDs and network/FUSE drives (e.g. Google Drive).
+    Handles read-only filesystems and directory paths gracefully.
     """
+    db_path = resolve_data_path(db_path)
+    if os.path.isdir(db_path):
+        cands = (
+            glob.glob(os.path.join(db_path, "**/*google_maps*.db"), recursive=True) +
+            glob.glob(os.path.join(db_path, "**/*.db"), recursive=True) +
+            glob.glob(os.path.join(db_path, "**/*.sqlite*"), recursive=True)
+        )
+        if cands:
+            db_path = cands[0]
+
+    is_kaggle_input = "/kaggle/input" in db_path.replace("\\", "/")
+    is_ro = read_only or is_kaggle_input
+
+    if is_ro:
+        abs_path = os.path.abspath(db_path).replace("\\", "/")
+        uri = f"file:{abs_path}?mode=ro"
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=timeout)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("PRAGMA busy_timeout = 60000;")
+                conn.execute("PRAGMA synchronous = NORMAL;")
+            except Exception:
+                pass
+            return conn
+        except Exception:
+            pass
+
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     conn = sqlite3.connect(db_path, timeout=timeout)
     conn.row_factory = sqlite3.Row

@@ -9,6 +9,7 @@ Can flag or remove false matches and their associated images/reviews.
 import os
 import sys
 import re
+import glob
 import sqlite3
 import argparse
 from cafe_matcher import evaluate_cafe_match, haversine_distance
@@ -31,17 +32,32 @@ OUTPUT_DB_PATH = os.getenv("OUTPUT_DB_PATH", os.path.join(DATA_DIR, "google_maps
 SOURCE_DB_PATH = os.getenv("SOURCE_DB_PATH", os.path.join(DATA_DIR, "cafes_cafe_shard00.db"))
 
 def resolve_data_path(file_path):
-    """Smartly resolves a file path, checking data/ and BASE_DIR as fallbacks if not found directly."""
+    """
+    Smartly resolves a file path.
+    If given a directory, discovers database files inside.
+    Bare filenames without directories fall back to data/ or BASE_DIR.
+    """
     if not file_path:
+        return file_path
+    if os.path.isdir(file_path):
+        cands = (
+            glob.glob(os.path.join(file_path, "**/*cafes_cafe*.db"), recursive=True) +
+            glob.glob(os.path.join(file_path, "**/*.db"), recursive=True) +
+            glob.glob(os.path.join(file_path, "**/*.sqlite*"), recursive=True)
+        )
+        if cands:
+            return cands[0]
         return file_path
     if os.path.exists(file_path):
         return file_path
-    data_cand = os.path.join(DATA_DIR, os.path.basename(file_path))
-    if os.path.exists(data_cand):
-        return data_cand
-    root_cand = os.path.join(BASE_DIR, os.path.basename(file_path))
-    if os.path.exists(root_cand):
-        return root_cand
+    parent_dir = os.path.dirname(file_path)
+    if not parent_dir:
+        data_cand = os.path.join(DATA_DIR, os.path.basename(file_path))
+        if os.path.exists(data_cand):
+            return data_cand
+        root_cand = os.path.join(BASE_DIR, os.path.basename(file_path))
+        if os.path.exists(root_cand):
+            return root_cand
     return file_path
 
 def audit_database(output_db=None, source_db=None, threshold=0.80, apply_changes=False):
