@@ -1,4 +1,10 @@
+import os
+import sys
 import unittest
+
+# Ensure root directory is on sys.path for direct script execution
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from cafe_matcher import (
     haversine_distance,
     compute_distance_score,

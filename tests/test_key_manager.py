@@ -1,5 +1,11 @@
+import os
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
+
+# Ensure root directory is on sys.path for direct script execution
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from key_manager import (
     ApifyKeyManager,
     KeyStatus,

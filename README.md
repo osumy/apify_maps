@@ -176,9 +176,9 @@ To export the pool status in JSON format:
 python key_manager.py --json
 ```
 
-To run unit tests verifying key failover, error detection, and rotation:
+To run unit tests verifying key failover, error detection, rotation, and matching logic:
 ```bash
-python -m unittest test_key_manager.py
+python -m unittest discover tests
 ```
 
 To download photos for a specific venue by its ID (e.g., cafe ID `32`):
@@ -327,14 +327,22 @@ apify_maps/
 ├── .env.example              # Sample environment configuration
 ├── .gitignore                # Git exclusion rules
 ├── requirements.txt          # Python dependencies (apify-client, requests, tqdm)
+├── run_crawler.py            # Main crawling & ingestion engine with top-5 matching
+├── cafe_matcher.py           # Strict multi-factor matching engine (Haversine + Phonetic)
 ├── key_manager.py            # Multi-key pool & health inspector
-├── test_key_manager.py       # Unit test suite for key manager
-├── run_crawler.py            # Modular scraping engine with Dual-Storage & author extraction
-├── download_images.py        # Modular multi-threaded high-res WebP downloader with periodic commit
-├── migrate_to_relational.py  # Zero-loss migration script from legacy raw DB
+├── download_images.py        # Modular multi-threaded high-res WebP downloader
+├── audit_and_clean_db.py     # Database hygiene & retroactive mismatch audit CLI
+├── docs/
+│   ├── MATCHING_SPECIFICATION.md # Full engineering specification of SMPMS
+│   └── schemas/              # Apify crawler input & output JSON schemas
+│       ├── actor_input_schema.json
+│       └── actor_output_schema.json
+├── tests/                    # Automated test suites
+│   ├── __init__.py
+│   ├── test_cafe_matcher.py  # Tests for matching engine & phonetic rules
+│   └── test_key_manager.py   # Tests for key rotation & failover
 ├── README.md                 # Complete documentation
-├── google_maps.db            # Clean, normalized relational database
-└── google_maps_raw.jsonl     # Complete raw JSON Lines archive (zero data loss)
+└── google_maps.db            # Clean, normalized relational database
 ```
 
 ---
