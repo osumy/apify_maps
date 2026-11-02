@@ -33,6 +33,8 @@ data/downloaded_images/
 benchmark_results.json
 data/*.jsonl
 data/*.db.bak
+*test*.db
+data/*test*.db
 
 # SQLite databases (uncomment if you wish to ignore databases in future runs)
 # *.db
