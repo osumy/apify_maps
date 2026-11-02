@@ -8,6 +8,14 @@ import urllib.parse
 from difflib import SequenceMatcher
 from apify_client import ApifyClient
 from key_manager import ApifyKeyManager, AllKeysExhaustedError
+from cafe_matcher import (
+    haversine_distance,
+    compute_name_similarity,
+    evaluate_cafe_match,
+    select_best_candidate,
+    normalize_text,
+    MatchResult
+)
 
 # Helper to load .env without external dependencies
 def load_dotenv():
@@ -34,6 +42,8 @@ MAX_REVIEWS_PER_PLACE = int(os.getenv("MAX_REVIEWS_PER_PLACE", "15"))
 ZOOM_LEVEL = int(os.getenv("ZOOM_LEVEL", "17"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
 SCRAPE_IMAGE_AUTHORS = os.getenv("SCRAPE_IMAGE_AUTHORS", "true").lower() in ("true", "1", "yes")
+MAX_PLACES_PER_SEARCH = int(os.getenv("MAX_PLACES_PER_SEARCH", "5"))
+MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.80"))
 
 _default_key_manager = None
 
@@ -94,17 +104,7 @@ def normalize_text(text):
     return ' '.join(tokens) if tokens else t
 
 def compute_similarity(s1, s2):
-    n1 = normalize_text(s1)
-    n2 = normalize_text(s2)
-    if not n1 or not n2:
-        return 0.5
-    tokens1 = set(n1.split())
-    tokens2 = set(n2.split())
-    if tokens1 & tokens2:
-        jaccard = len(tokens1 & tokens2) / len(tokens1 | tokens2)
-        seq = SequenceMatcher(None, n1, n2).ratio()
-        return round(max(jaccard, seq), 2)
-    return round(SequenceMatcher(None, n1, n2).ratio(), 2)
+    return compute_name_similarity(s1, s2)
 
 def to_high_res_url(img_url):
     """
@@ -153,9 +153,15 @@ def init_output_db(output_db_path=None):
         google_maps_url TEXT,
         status TEXT,
         name_match_score REAL,
+        distance_meters REAL,
         scraped_at TEXT
     )
     ''')
+
+    try:
+        cur.execute("ALTER TABLE places ADD COLUMN distance_meters REAL")
+    except Exception:
+        pass
 
     cur.execute('''
     CREATE TABLE IF NOT EXISTS place_images (
@@ -272,7 +278,12 @@ def get_pending_cafes(source_db_path=None, output_db_path=None, limit=None, zoom
 
     src_conn = get_db_connection(source_db_path)
     src_cur = src_conn.cursor()
-    rows = src_cur.execute("SELECT id, name, latitude, longitude, city, address FROM cafes_cafe").fetchall()
+    col_names = [col[1] for col in src_cur.execute("PRAGMA table_info(cafes_cafe)").fetchall()]
+    select_cols = ["id", "name", "latitude", "longitude", "city", "address"]
+    for extra in ["phone", "instagram", "website"]:
+        if extra in col_names:
+            select_cols.append(extra)
+    rows = src_cur.execute(f"SELECT {', '.join(select_cols)} FROM cafes_cafe").fetchall()
     src_conn.close()
 
     pending = []
@@ -292,6 +303,10 @@ def get_pending_cafes(source_db_path=None, output_db_path=None, limit=None, zoom
             "latitude": lat,
             "longitude": lng,
             "city": r["city"],
+            "address": r["address"],
+            "phone": r["phone"] if "phone" in r.keys() else None,
+            "instagram": r["instagram"] if "instagram" in r.keys() else None,
+            "website": r["website"] if "website" in r.keys() else None,
             "search_url": search_url
         })
         if limit and len(pending) >= limit:
@@ -299,7 +314,7 @@ def get_pending_cafes(source_db_path=None, output_db_path=None, limit=None, zoom
 
     return pending
 
-def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_jsonl_path=None):
+def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_jsonl_path=None, threshold=MATCH_THRESHOLD):
     output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
     raw_jsonl_path = raw_jsonl_path or os.getenv("RAW_JSONL_PATH", RAW_JSONL_PATH)
 
@@ -307,225 +322,243 @@ def save_batch_results(batch_cafes, scraped_items, output_db_path=None, raw_json
     conn = get_db_connection(output_db_path)
     cur = conn.cursor()
 
-    url_to_cafe = {c["search_url"]: c for c in batch_cafes}
+    # Group scraped items by search_url
+    url_to_candidates = {c["search_url"]: [] for c in batch_cafes}
+    unmapped_items = []
+
+    for item in scraped_items:
+        raw_search_url = item.get("searchPageUrl", "")
+        clean_url = raw_search_url.split("?")[0]
+        if clean_url in url_to_candidates:
+            url_to_candidates[clean_url].append(item)
+        else:
+            unmapped_items.append(item)
+
+    # For any unmapped items (due to URL variations), assign to closest batch cafe within 250m
+    for item in unmapped_items:
+        loc = item.get("location") or {}
+        item_lat = loc.get("lat")
+        item_lng = loc.get("lng")
+        if item_lat and item_lng:
+            best_c = None
+            min_d = float('inf')
+            for c in batch_cafes:
+                d = haversine_distance(c["latitude"], c["longitude"], item_lat, item_lng)
+                if d < min_d and d <= 250.0:
+                    min_d = d
+                    best_c = c
+            if best_c:
+                url_to_candidates[best_c["search_url"]].append(item)
+
     matched_cafe_ids = set()
 
     # Append-only raw JSON Lines archive
     os.makedirs(os.path.dirname(os.path.abspath(raw_jsonl_path)), exist_ok=True)
     jsonl_file = open(raw_jsonl_path, "a", encoding="utf-8")
 
-    for item in scraped_items:
-        raw_search_url = item.get("searchPageUrl", "")
-        clean_url = raw_search_url.split("?")[0]
-        
-        cafe = url_to_cafe.get(clean_url)
-        
-        # Fallback match by exact coordinate proximity if URL had encoding variation
-        if not cafe:
-            loc = item.get("location") or {}
-            item_lat = loc.get("lat")
-            item_lng = loc.get("lng")
-            if item_lat and item_lng:
-                best_cafe = None
-                min_dist = float('inf')
-                for c in batch_cafes:
-                    if c["cafe_id"] in matched_cafe_ids:
-                        continue
-                    d = ((c["latitude"] - item_lat)**2 + (c["longitude"] - item_lng)**2)**0.5
-                    if d < min_dist:
-                        min_dist = d
-                        best_cafe = c
-                if best_cafe and min_dist < 0.008:
-                    cafe = best_cafe
-
-        if not cafe:
-            continue
-
+    for cafe in batch_cafes:
         cid = cafe["cafe_id"]
-        matched_cafe_ids.add(cid)
+        candidates = url_to_candidates.get(cafe["search_url"], [])
 
-        # 1. Archive raw JSON payload into JSONL file
-        archive_entry = {
-            "cafe_id": cid,
-            "original_name": cafe["name"],
-            "searched_lat": cafe["latitude"],
-            "searched_lng": cafe["longitude"],
-            "search_url": cafe["search_url"],
-            "status": "success",
-            "scraped_at": item.get("scrapedAt") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "data": item
-        }
-        jsonl_file.write(json.dumps(archive_entry, ensure_ascii=False) + "\n")
+        best_item, match_res = select_best_candidate(cafe, candidates, threshold=threshold)
 
-        # 2. Extract into clean relational tables
-        loc = item.get("location") or {}
-        scraped_lat = loc.get("lat")
-        scraped_lng = loc.get("lng")
-        title = item.get("title") or cafe["name"]
-        match_score = compute_similarity(cafe["name"], title)
+        if best_item and match_res and match_res.is_match:
+            matched_cafe_ids.add(cid)
 
-        cur.execute('''
-            INSERT OR REPLACE INTO places (
-                cafe_id, place_id, cid, fid, original_name, title, category_name, categories,
-                address, street, city, state, country_code, postal_code,
-                latitude, longitude, phone, phone_unformatted, website,
-                total_score, reviews_count, images_count, price_level,
-                is_claimed, is_permanently_closed, is_temporarily_closed,
-                search_url, google_maps_url, status, name_match_score, scraped_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            cid,
-            item.get("placeId"),
-            item.get("cid"),
-            item.get("fid"),
-            cafe["name"],
-            title,
-            item.get("categoryName"),
-            json.dumps(item.get("categories", []), ensure_ascii=False),
-            item.get("address"),
-            item.get("street"),
-            item.get("city"),
-            item.get("state"),
-            item.get("countryCode"),
-            item.get("postalCode"),
-            scraped_lat,
-            scraped_lng,
-            item.get("phone"),
-            item.get("phoneUnformatted"),
-            item.get("website"),
-            item.get("totalScore"),
-            item.get("reviewsCount"),
-            item.get("imagesCount"),
-            item.get("price"),
-            1 if item.get("claimThisBusiness") else 0,
-            1 if item.get("permanentlyClosed") else 0,
-            1 if item.get("temporarilyClosed") else 0,
-            cafe["search_url"],
-            item.get("url"),
-            "success",
-            match_score,
-            item.get("scrapedAt") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        ))
+            # 1. Archive raw JSON payload into JSONL file
+            archive_entry = {
+                "cafe_id": cid,
+                "original_name": cafe["name"],
+                "searched_lat": cafe["latitude"],
+                "searched_lng": cafe["longitude"],
+                "search_url": cafe["search_url"],
+                "status": "success",
+                "composite_score": match_res.composite_score,
+                "distance_meters": round(match_res.distance_meters, 1),
+                "name_score": match_res.name_score,
+                "phone_matched": match_res.phone_matched,
+                "web_matched": match_res.web_matched,
+                "candidates_evaluated": len(candidates),
+                "scraped_at": best_item.get("scrapedAt") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "data": best_item
+            }
+            jsonl_file.write(json.dumps(archive_entry, ensure_ascii=False) + "\n")
 
-        seen_image_urls = set()
+            # 2. Extract into clean relational tables
+            loc = best_item.get("location") or {}
+            scraped_lat = loc.get("lat")
+            scraped_lng = loc.get("lng")
+            title = best_item.get("title") or cafe["name"]
 
-        # Cover Image
-        cover_url = item.get("imageUrl")
-        if cover_url:
-            seen_image_urls.add(cover_url)
             cur.execute('''
-                INSERT INTO place_images (cafe_id, source_type, is_owner_photo, author_name, image_url, high_res_url)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (cid, "cover", 1, title, cover_url, to_high_res_url(cover_url)))
-
-        # Rich images (from scrapeImageAuthors: true) or fallback imageUrls
-        rich_images = item.get("images", [])
-        if rich_images and isinstance(rich_images, list) and isinstance(rich_images[0], dict):
-            for img_obj in rich_images:
-                u = img_obj.get("imageUrl")
-                if not u or u in seen_image_urls:
-                    continue
-                seen_image_urls.add(u)
-                author = img_obj.get("authorName", "")
-                author_url = img_obj.get("authorUrl", "")
-                is_owner = 1 if (author and (normalize_text(author) == normalize_text(title))) else 0
-                cur.execute('''
-                    INSERT INTO place_images (cafe_id, source_type, is_owner_photo, author_name, author_url, image_url, high_res_url)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (cid, "gallery", is_owner, author, author_url, u, to_high_res_url(u)))
-        else:
-            gallery_urls = item.get("imageUrls", [])
-            for idx, u in enumerate(gallery_urls):
-                if not u or u in seen_image_urls:
-                    continue
-                seen_image_urls.add(u)
-                is_owner = 1 if idx < 2 else 0
-                cur.execute('''
-                    INSERT INTO place_images (cafe_id, source_type, is_owner_photo, image_url, high_res_url)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (cid, "gallery", is_owner, u, to_high_res_url(u)))
-
-        # Reviews & Review Images
-        for r in item.get("reviews", []):
-            rid = r.get("reviewId")
-            if not rid:
-                continue
-            det_rating = r.get("reviewDetailedRating") or {}
-            cur.execute('''
-                INSERT OR IGNORE INTO place_reviews (
-                    review_id, cafe_id, reviewer_id, reviewer_name, reviewer_photo_url,
-                    reviewer_reviews_count, is_local_guide BOOLEAN, stars, publish_date,
-                    publish_relative, likes_count, text, original_language,
-                    detailed_food_rating, detailed_service_rating, detailed_atmosphere_rating,
-                    response_from_owner_text, response_from_owner_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO places (
+                    cafe_id, place_id, cid, fid, original_name, title, category_name, categories,
+                    address, street, city, state, country_code, postal_code,
+                    latitude, longitude, phone, phone_unformatted, website,
+                    total_score, reviews_count, images_count, price_level,
+                    is_claimed, is_permanently_closed, is_temporarily_closed,
+                    search_url, google_maps_url, status, name_match_score, distance_meters, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                rid, cid, r.get("reviewerId"), r.get("name"), r.get("reviewerPhotoUrl"),
-                r.get("reviewerNumberOfReviews"), 1 if r.get("isLocalGuide") else 0,
-                r.get("stars"), r.get("publishedAtDate"), r.get("publishAt"),
-                r.get("likesCount") or 0, r.get("text"), r.get("originalLanguage"),
-                det_rating.get("غذا") or det_rating.get("Food"),
-                det_rating.get("خدمات") or det_rating.get("Service"),
-                det_rating.get("محيط") or det_rating.get("Atmosphere"),
-                r.get("responseFromOwnerText"), r.get("responseFromOwnerDate")
+                cid,
+                best_item.get("placeId"),
+                best_item.get("cid"),
+                best_item.get("fid"),
+                cafe["name"],
+                title,
+                best_item.get("categoryName"),
+                json.dumps(best_item.get("categories", []), ensure_ascii=False),
+                best_item.get("address"),
+                best_item.get("street"),
+                best_item.get("city"),
+                best_item.get("state"),
+                best_item.get("countryCode"),
+                best_item.get("postalCode"),
+                scraped_lat,
+                scraped_lng,
+                best_item.get("phone"),
+                best_item.get("phoneUnformatted"),
+                best_item.get("website"),
+                best_item.get("totalScore"),
+                best_item.get("reviewsCount"),
+                best_item.get("imagesCount"),
+                best_item.get("price"),
+                1 if best_item.get("claimThisBusiness") else 0,
+                1 if best_item.get("permanentlyClosed") else 0,
+                1 if best_item.get("temporarilyClosed") else 0,
+                cafe["search_url"],
+                best_item.get("url"),
+                "success",
+                match_res.composite_score,
+                round(match_res.distance_meters, 1),
+                best_item.get("scrapedAt") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             ))
 
-            for ru in r.get("reviewImageUrls", []):
-                if ru and ru not in seen_image_urls:
-                    seen_image_urls.add(ru)
-                    cur.execute('''
-                        INSERT INTO place_images (cafe_id, source_type, is_owner_photo, author_name, review_id, image_url, high_res_url)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (cid, "review", 0, r.get("name"), rid, ru, to_high_res_url(ru)))
+            seen_image_urls = set()
 
-        # Attributes
-        add_info = item.get("additionalInfo") or {}
-        for grp, items in add_info.items():
-            if isinstance(items, list):
-                for itm in items:
-                    if isinstance(itm, dict):
-                        for attr_name, val in itm.items():
-                            cur.execute('''
-                                INSERT OR IGNORE INTO place_attributes (cafe_id, group_name, attribute_name, value)
-                                VALUES (?, ?, ?, ?)
-                            ''', (cid, grp, attr_name, 1 if val else 0))
-
-        # Opening Hours
-        for h in item.get("openingHours") or []:
-            if isinstance(h, dict) and "day" in h:
+            # Cover Image
+            cover_url = best_item.get("imageUrl")
+            if cover_url:
+                seen_image_urls.add(cover_url)
                 cur.execute('''
-                    INSERT OR IGNORE INTO place_opening_hours (cafe_id, day, hours)
-                    VALUES (?, ?, ?)
-                ''', (cid, h.get("day"), h.get("hours")))
+                    INSERT INTO place_images (cafe_id, source_type, is_owner_photo, author_name, image_url, high_res_url)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (cid, "cover", 1, title, cover_url, to_high_res_url(cover_url)))
 
-        # Popular Times
-        for day, hourly in (item.get("popularTimesHistogram") or {}).items():
-            if isinstance(hourly, list):
-                for h_item in hourly:
-                    if isinstance(h_item, dict):
+            # Rich images (from scrapeImageAuthors: true) or fallback imageUrls
+            rich_images = best_item.get("images", [])
+            if rich_images and isinstance(rich_images, list) and isinstance(rich_images[0], dict):
+                for img_obj in rich_images:
+                    u = img_obj.get("imageUrl")
+                    if not u or u in seen_image_urls:
+                        continue
+                    seen_image_urls.add(u)
+                    author = img_obj.get("authorName", "")
+                    author_url = img_obj.get("authorUrl", "")
+                    is_owner = 1 if (author and (normalize_text(author) == normalize_text(title))) else 0
+                    cur.execute('''
+                        INSERT INTO place_images (cafe_id, source_type, is_owner_photo, author_name, author_url, image_url, high_res_url)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (cid, "gallery", is_owner, author, author_url, u, to_high_res_url(u)))
+            else:
+                gallery_urls = best_item.get("imageUrls", [])
+                for idx, u in enumerate(gallery_urls):
+                    if not u or u in seen_image_urls:
+                        continue
+                    seen_image_urls.add(u)
+                    is_owner = 1 if idx < 2 else 0
+                    cur.execute('''
+                        INSERT INTO place_images (cafe_id, source_type, is_owner_photo, image_url, high_res_url)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (cid, "gallery", is_owner, u, to_high_res_url(u)))
+
+            # Reviews & Review Images
+            for r in best_item.get("reviews", []):
+                rid = r.get("reviewId")
+                if not rid:
+                    continue
+                det_rating = r.get("reviewDetailedRating") or {}
+                cur.execute('''
+                    INSERT OR IGNORE INTO place_reviews (
+                        review_id, cafe_id, reviewer_id, reviewer_name, reviewer_photo_url,
+                        reviewer_reviews_count, is_local_guide, stars, publish_date,
+                        publish_relative, likes_count, text, original_language,
+                        detailed_food_rating, detailed_service_rating, detailed_atmosphere_rating,
+                        response_from_owner_text, response_from_owner_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    rid, cid, r.get("reviewerId"), r.get("name"), r.get("reviewerPhotoUrl"),
+                    r.get("reviewerNumberOfReviews"), 1 if r.get("isLocalGuide") else 0,
+                    r.get("stars"), r.get("publishedAtDate"), r.get("publishAt"),
+                    r.get("likesCount") or 0, r.get("text"), r.get("originalLanguage"),
+                    det_rating.get("غذا") or det_rating.get("Food"),
+                    det_rating.get("خدمات") or det_rating.get("Service"),
+                    det_rating.get("محيط") or det_rating.get("Atmosphere"),
+                    r.get("responseFromOwnerText"), r.get("responseFromOwnerDate")
+                ))
+
+                for ru in r.get("reviewImageUrls", []):
+                    if ru and ru not in seen_image_urls:
+                        seen_image_urls.add(ru)
                         cur.execute('''
-                            INSERT OR IGNORE INTO place_popular_times (cafe_id, day, hour, occupancy_percent)
-                            VALUES (?, ?, ?, ?)
-                        ''', (cid, day, h_item.get("hour"), h_item.get("occupancyPercent")))
+                            INSERT INTO place_images (cafe_id, source_type, is_owner_photo, author_name, review_id, image_url, high_res_url)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ''', (cid, "review", 0, r.get("name"), rid, ru, to_high_res_url(ru)))
 
-    # Record unmatched cafes as not_found so we don't re-crawl repeatedly
-    for c in batch_cafes:
-        cid = c["cafe_id"]
-        if cid not in matched_cafe_ids:
+            # Attributes
+            add_info = best_item.get("additionalInfo") or {}
+            for grp, items in add_info.items():
+                if isinstance(items, list):
+                    for itm in items:
+                        if isinstance(itm, dict):
+                            for attr_name, val in itm.items():
+                                cur.execute('''
+                                    INSERT OR IGNORE INTO place_attributes (cafe_id, group_name, attribute_name, value)
+                                    VALUES (?, ?, ?, ?)
+                                ''', (cid, grp, attr_name, 1 if val else 0))
+
+            # Opening Hours
+            for h in best_item.get("openingHours") or []:
+                if isinstance(h, dict) and "day" in h:
+                    cur.execute('''
+                        INSERT OR IGNORE INTO place_opening_hours (cafe_id, day, hours)
+                        VALUES (?, ?, ?)
+                    ''', (cid, h.get("day"), h.get("hours")))
+
+            # Popular Times
+            for day, hourly in (best_item.get("popularTimesHistogram") or {}).items():
+                if isinstance(hourly, list):
+                    for h_item in hourly:
+                        if isinstance(h_item, dict):
+                            cur.execute('''
+                                INSERT OR IGNORE INTO place_popular_times (cafe_id, day, hour, occupancy_percent)
+                                VALUES (?, ?, ?, ?)
+                            ''', (cid, day, h_item.get("hour"), h_item.get("occupancyPercent")))
+        else:
+            # NOT FOUND / REJECTED
+            reason = match_res.rejection_reason if match_res else "No candidates returned by Google Maps"
+            comp_score = match_res.composite_score if match_res else 0.0
+            dist_m = round(match_res.distance_meters, 1) if (match_res and match_res.distance_meters != float('inf')) else None
+
             cur.execute('''
-                INSERT OR IGNORE INTO places (
-                    cafe_id, original_name, latitude, longitude, search_url, status, scraped_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (cid, c["name"], c["latitude"], c["longitude"], c["search_url"], "not_found",
-                  time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+                INSERT OR REPLACE INTO places (
+                    cafe_id, original_name, latitude, longitude, search_url, status, name_match_score, distance_meters, scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (cid, cafe["name"], cafe["latitude"], cafe["longitude"], cafe["search_url"], "not_found",
+                  comp_score, dist_m, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
 
             archive_entry = {
                 "cafe_id": cid,
-                "original_name": c["name"],
-                "searched_lat": c["latitude"],
-                "searched_lng": c["longitude"],
-                "search_url": c["search_url"],
+                "original_name": cafe["name"],
+                "searched_lat": cafe["latitude"],
+                "searched_lng": cafe["longitude"],
+                "search_url": cafe["search_url"],
                 "status": "not_found",
+                "rejection_reason": reason,
+                "best_score": comp_score,
+                "distance_meters": dist_m,
+                "candidates_evaluated": len(candidates),
+                "candidate_titles": [c.get("title") for c in candidates],
                 "scraped_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "data": None
             }
@@ -545,6 +578,8 @@ def run_scraper(
     max_images=None,
     max_reviews=None,
     zoom_level=None,
+    max_places_per_search=None,
+    match_threshold=None,
     key_manager_instance=None,
     scrape_image_authors=None,
     progress_bar=True
@@ -552,7 +587,7 @@ def run_scraper(
     """
     Main scraper execution engine.
     Supports modular arguments, live progress tracking, auto-rotation across multiple keys,
-    and resumability.
+    strict matching, and resumability.
     """
     source_db_path = source_db_path or os.getenv("SOURCE_DB_PATH", SOURCE_DB_PATH)
     output_db_path = output_db_path or os.getenv("OUTPUT_DB_PATH", OUTPUT_DB_PATH)
@@ -561,6 +596,8 @@ def run_scraper(
     max_images = int(max_images if max_images is not None else os.getenv("MAX_IMAGES_PER_PLACE", "50"))
     max_reviews = int(max_reviews if max_reviews is not None else os.getenv("MAX_REVIEWS_PER_PLACE", "15"))
     zoom_level = int(zoom_level if zoom_level is not None else os.getenv("ZOOM_LEVEL", "17"))
+    max_places_per_search = int(max_places_per_search if max_places_per_search is not None else os.getenv("MAX_PLACES_PER_SEARCH", "5"))
+    match_threshold = float(match_threshold if match_threshold is not None else os.getenv("MATCH_THRESHOLD", "0.80"))
     if scrape_image_authors is None:
         scrape_image_authors = os.getenv("SCRAPE_IMAGE_AUTHORS", "true").lower() in ("true", "1", "yes")
 
@@ -608,7 +645,7 @@ def run_scraper(
         
         run_input = {
             "startUrls": start_urls,
-            "maxCrawledPlacesPerSearch": 1,
+            "maxCrawledPlacesPerSearch": max_places_per_search,
             "maxImages": max_images,
             "maxReviews": max_reviews,
             "scrapeImageAuthors": scrape_image_authors,
@@ -633,7 +670,7 @@ def run_scraper(
                 print(f"Retrieved {len(items)} places from Apify.")
 
                 matched, not_found = save_batch_results(
-                    batch, items, output_db_path=output_db_path, raw_jsonl_path=raw_jsonl_path
+                    batch, items, output_db_path=output_db_path, raw_jsonl_path=raw_jsonl_path, threshold=match_threshold
                 )
                 total_matched += matched
                 total_not_found += not_found

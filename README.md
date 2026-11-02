@@ -227,12 +227,14 @@ downloaded_images/
 
 ## Technical Architecture
 
-### Geo-Targeted Coordinate Matching
-Standard text queries often produce ambiguous results or match cafes with common names located hundreds of kilometers away. To guarantee deterministic matching, search queries are constructed with viewport coordinate locking:
-```text
-https://www.google.com/maps/search/{encoded_name}/@{lat},{lng},{zoom}z
-```
-At `Zoom 17`, Google Maps restricts its viewport to a narrow radius (~200–300 meters), pinning the search specifically to the target venue while filtering out distant namesakes.
+### Strict Multi-Factor Matching Engine (`cafe_matcher.py`)
+To prevent catastrophic false positives (e.g. showing wrong photos, menus, or addresses from distant venues), the scraper uses a multi-tier matching engine:
+1. **Top-5 Candidate Evaluation:** Apify extracts up to 5 places per search query (`MAX_PLACES_PER_SEARCH=5`), preventing ads or nearby shops from masking the true venue.
+2. **Geographic Distance Decay & Hard Veto:** Distance is measured with the Haversine formula. Candidates $> 250\text{m}$ away are strictly **disqualified** (vetoed). Close matches ($\le 30\text{m}$) receive full score, decaying smoothly towards 200m.
+3. **Cross-Lingual Phonetic Transliteration:** Maps Persian cafe names to Latin phonemes (e.g. *کافه رستوران عباس آقا* $\to$ *abbasagha* vs *Abbasagha Restaurant* $\to$ *abbasagha* = 0.95+ match), correctly matching English Google entries without false mismatches.
+4. **Digital Identity Signals:** Direct phone matches (normalized 10-digit) and Instagram username matches provide high-confidence verification and relax distance buffer up to 350m.
+5. **Strict Composite Threshold:** Venues must achieve a composite score $\ge 0.80$ (`MATCH_THRESHOLD=0.80`) to be accepted as `success`. Low-confidence results are rejected without saving wrong photos or reviews.
+6. **Audit & Cleansing Tool:** Run `python audit_and_clean_db.py` to audit existing databases and flag or purge false matches.
 
 ### Ultra High-Resolution WebP Media Pipeline (`=s0-rw`)
 Google Maps serves user-uploaded images via dynamic content delivery parameters (e.g., `=w1920-h1080-k-no`). The scraper parses image URLs and replaces any downsampling parameters with `=s0-rw`:
@@ -262,7 +264,8 @@ The relational database (`google_maps.db`) consists of dedicated, indexed tables
 | `cid` | `TEXT` | Google Maps customer ID |
 | `title` | `TEXT` | Verified business name on Google Maps |
 | `original_name` | `TEXT` | Source query name |
-| `name_match_score` | `REAL` | Name similarity score (0.0 - 1.0) for mismatch detection |
+| `name_match_score` | `REAL` | Composite match confidence score (0.0 - 1.0) |
+| `distance_meters` | `REAL` | Distance in meters between source and matched coordinates |
 | `category_name` | `TEXT` | Primary category (e.g. کافی شاپ) |
 | `address` | `TEXT` | Full physical address |
 | `city` / `state` | `TEXT` | City and province/state |
