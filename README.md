@@ -228,6 +228,8 @@ downloaded_images/
 ## Technical Architecture
 
 ### Strict Multi-Factor Matching Engine (`cafe_matcher.py`)
+> 📖 **Full Engineering Specification:** See [`docs/MATCHING_SPECIFICATION.md`](docs/MATCHING_SPECIFICATION.md) for complete mathematical formulas, phoneme mapping tables, multi-gate decision rules, and benchmark case studies.
+
 To prevent catastrophic false positives (e.g. showing wrong photos, menus, or addresses from distant venues), the scraper uses a multi-tier matching engine:
 1. **Top-5 Candidate Evaluation:** Apify extracts up to 5 places per search query (`MAX_PLACES_PER_SEARCH=5`), preventing ads or nearby shops from masking the true venue.
 2. **Geographic Distance Decay & Hard Veto:** Distance is measured with the Haversine formula. Candidates $> 250\text{m}$ away are strictly **disqualified** (vetoed). Close matches ($\le 30\text{m}$) receive full score, decaying smoothly towards 200m.
