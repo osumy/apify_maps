@@ -33,7 +33,10 @@ A robust, fault-tolerant, and high-throughput data extraction pipeline designed 
 - **Resumable & Fault-Tolerant:** Tracks crawler state directly within SQLite. In the event of network disruption or process termination, subsequent runs skip previously completed places and resume cleanly.
 - **High-Throughput Parallel Downloader:** Multi-threaded asynchronous asset downloader with retry mechanisms and adaptive fallback handling.
 - **Batched Execution:** Distributes search operations in batches to `compass/crawler-google-places` on Apify to optimize API memory allocation and run costs.
-- **Zero Hardcoding & Portability:** Fully configurable paths, batch sizes, retry parameters, and concurrency limits via standard `.env` variables.
+- **Deep Venue Profile Extraction:** Extracts neighborhoods (`neighborhood`), commercial complexes (`located_in`), floors (`floor`), digital menus, official owner introductions (`owner_description`), Google Plus Codes, Knowledge Graph IDs (`kgmid`), and 1-to-5 star rating distributions.
+- **Optional Contacts & Social Media Enrichment:** Built-in support (`--scrape-contacts`, `--scrape-socials`) to automatically extract company emails, phone numbers, and Instagram/Facebook profiles directly from venue websites.
+- **Rich Review Metadata & Context:** Captures direct review URLs, reviewer profiles, and detailed context parameters including order type (dine-in/takeout), meal category, price per person, noise levels, and localized translations.
+- **Zero Hardcoding & Portability:** Fully configurable paths, batch sizes, retry parameters, and concurrency limits via standard `.env` variables and CLI arguments.
 
 ---
 
@@ -119,6 +122,10 @@ MAX_REVIEWS_PER_PLACE=15
 
 # Viewport zoom level
 ZOOM_LEVEL=17
+
+# Optional contacts & social media enrichment (default: false)
+SCRAPE_CONTACTS=false
+SCRAPE_SOCIAL_MEDIA_PROFILES=false
 ```
 
 ---
@@ -132,12 +139,23 @@ To run the full crawler over all pending cafes from the source database:
 python run_crawler.py
 ```
 
-To run a limited test run (e.g., scrape the next 5 pending cafes):
+To run a limited test run with custom batch size or contacts enrichment:
 ```bash
-python run_crawler.py 5
+# Scrape the next 50 pending venues with contact & social profile enrichment:
+python run_crawler.py 50 --scrape-contacts --scrape-socials
+
+# Specify custom database and jsonl paths:
+python run_crawler.py 50 --source-db "path/to/source.db" --output-db "data/output.db"
 ```
 
-### 2. Downloading High-Resolution Photos
+### 2. Retroactive Schema Migration & Backfill
+
+If you have previously scraped raw JSONL files and want to backfill missing fields (neighborhoods, 5-star distributions, review contexts) into the relational database:
+```bash
+python migrate_schema_and_backfill.py
+```
+
+### 3. Downloading High-Resolution Photos
 
 To download all scraped high-resolution photos for all successfully matched cafes:
 ```bash
@@ -268,6 +286,13 @@ The relational database (`data/google_maps.db`) consists of dedicated, indexed t
 | `original_name` | `TEXT` | Source query name |
 | `name_match_score` | `REAL` | Composite match confidence score (0.0 - 1.0) |
 | `distance_meters` | `REAL` | Distance in meters between source and matched coordinates |
+| `neighborhood` | `TEXT` | Neighborhood or urban district (e.g. نازی‌آباد, تجریش) |
+| `located_in` | `TEXT` | Commercial complex or mall (e.g. مرکز خرید گالریا, بام‌لند) |
+| `floor` | `TEXT` | Floor level inside building or complex |
+| `menu` | `TEXT` | URL to digital menu |
+| `owner_description` | `TEXT` | Official introduction written by the business owner |
+| `plus_code` | `TEXT` | Google Plus Code navigation identifier |
+| `kgmid` | `TEXT` | Google Knowledge Graph entity ID (`/g/...`) |
 | `category_name` | `TEXT` | Primary category (e.g. کافی شاپ) |
 | `address` | `TEXT` | Full physical address |
 | `city` / `state` | `TEXT` | City and province/state |
@@ -277,6 +302,11 @@ The relational database (`data/google_maps.db`) consists of dedicated, indexed t
 | `total_score` | `REAL` | Average rating (1.0 - 5.0) |
 | `reviews_count` | `INTEGER` | Total Google Maps reviews count |
 | `images_count` | `INTEGER` | Total Google Maps photos count |
+| `reviews_distribution_1_star`..`5_star` | `INTEGER` | Counts of reviews per star level (1 to 5) |
+| `reviews_distribution` | `TEXT` | Raw JSON dictionary of star distribution |
+| `emails` / `phones` | `TEXT` | Enriched company emails & phone numbers (JSON array) |
+| `instagrams` / `facebooks` / `twitters` | `TEXT` | Enriched social media profile URLs (JSON array) |
+| `social_profiles` | `TEXT` | Enriched social profile metadata (followers, avatar URL) |
 | `is_claimed` | `BOOLEAN` | Whether claimed via Google Business Profile |
 | `status` | `TEXT` | Resolution status (`success` or `not_found`) |
 
@@ -300,14 +330,25 @@ The relational database (`data/google_maps.db`) consists of dedicated, indexed t
 | `review_id` | `TEXT PRIMARY KEY` | Google review ID (`Ci9DQUl...`) |
 | `cafe_id` | `INTEGER` | Foreign key to `places.cafe_id` |
 | `reviewer_name` | `TEXT` | Name of the reviewer |
+| `review_url` | `TEXT` | Direct permanent URL to the review on Google Maps |
+| `reviewer_url` | `TEXT` | Direct Google Maps profile URL of the reviewer |
 | `stars` | `INTEGER` | Rating given (1 to 5) |
 | `publish_date` | `TEXT` | ISO 8601 UTC timestamp |
 | `text` | `TEXT` | Review text |
+| `context_order_type` | `TEXT` | Order type (e.g. صرف غذا در محل, بیرون‌بر) |
+| `context_meal_type` | `TEXT` | Meal category (e.g. شام, صبحانه, چاشت) |
+| `context_price_per_person` | `TEXT` | Estimated price paid per person |
+| `context_noise_level` | `TEXT` | Ambient noise level (e.g. سروصدا در سطح متوسط) |
+| `review_context` | `TEXT` | Raw structured context dictionary (JSON) |
+| `text_translated` | `TEXT` | Translated text for foreign-language reviews |
+| `translated_language` | `TEXT` | Target translation language code |
 | `likes_count` | `INTEGER` | Helpful votes on the review |
 | `is_local_guide` | `BOOLEAN` | True if author is a Google Local Guide |
 | `detailed_food_rating` | `REAL` | Sub-rating for food quality |
 | `detailed_service_rating` | `REAL` | Sub-rating for service |
 | `detailed_atmosphere_rating` | `REAL` | Sub-rating for atmosphere |
+| `detailed_room_rating` | `REAL` | Sub-rating for rooms (if venue offers lodging) |
+| `detailed_location_rating` | `REAL` | Sub-rating for location |
 
 ### 4. Table: `place_attributes` (Amenities & Features)
 Extracted from Google Maps `additionalInfo`:
@@ -341,6 +382,7 @@ apify_maps/
 ├── key_manager.py            # Multi-key pool & health inspector
 ├── download_images.py        # Modular multi-threaded high-res WebP downloader
 ├── audit_and_clean_db.py     # Database hygiene & retroactive mismatch audit CLI
+├── migrate_schema_and_backfill.py # Retroactive schema migration & raw JSONL backfill
 ├── google_maps_scraper.ipynb # Google Colab / Kaggle interactive execution notebook
 ├── requirements.txt          # Python dependencies (apify-client, requests, tqdm)
 ├── .env.example              # Sample environment configuration
